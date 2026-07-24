@@ -36,7 +36,8 @@ jobs:
           chmod +x "$RUNNER_TEMP/shfmt"
 
       - name: Check formatting
-        run: "$RUNNER_TEMP/shfmt" -i 2 -ci -d bin/codex-account tests
+        run: |
+          "$RUNNER_TEMP/shfmt" -i 2 -ci -d bin/codex-account tests
 
   test:
     strategy:
@@ -55,7 +56,8 @@ jobs:
             https://github.com/bats-core/bats-core.git "$RUNNER_TEMP/bats"
 
       - name: Run tests
-        run: "$RUNNER_TEMP/bats/bin/bats" tests
+        run: |
+          "$RUNNER_TEMP/bats/bin/bats" tests
 
   # macOS ships bash 3.2 and that is what most users will run this under.
   bash32:
