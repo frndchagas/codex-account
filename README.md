@@ -2,7 +2,7 @@
 
 Switch between multiple Codex accounts without signing out.
 
-[![CI](https://github.com/fernandostrive/codex-account/actions/workflows/ci.yml/badge.svg)](https://github.com/fernandostrive/codex-account/actions/workflows/ci.yml)
+[![CI](https://github.com/frndchagas/codex-account/actions/workflows/ci.yml/badge.svg)](https://github.com/frndchagas/codex-account/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 ## The problem
@@ -42,7 +42,7 @@ used when present but is not required.
 **Homebrew** — not yet published. For now:
 
 ```sh
-git clone https://github.com/fernandostrive/codex-account.git
+git clone https://github.com/frndchagas/codex-account.git
 cd codex-account
 sudo make install            # installs to /usr/local/bin
 ```
@@ -57,7 +57,7 @@ Or just drop the single file anywhere on your `PATH`:
 
 ```sh
 curl -fsSLo ~/.local/bin/codex-account \
-  https://raw.githubusercontent.com/fernandostrive/codex-account/main/bin/codex-account
+  https://raw.githubusercontent.com/frndchagas/codex-account/main/bin/codex-account
 chmod +x ~/.local/bin/codex-account
 ```
 

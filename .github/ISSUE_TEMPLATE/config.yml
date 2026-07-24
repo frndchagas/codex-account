@@ -1,5 +1,5 @@
 blank_issues_enabled: false
 contact_links:
   - name: Security vulnerability
-    url: https://github.com/fernandostrive/codex-account/security/advisories/new
+    url: https://github.com/frndchagas/codex-account/security/advisories/new
     about: Report privately, not as a public issue.

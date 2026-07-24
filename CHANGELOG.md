@@ -25,5 +25,5 @@ Initial release.
 - `--dry-run` for every mutating command.
 - macOS and Linux support; bash 3.2 compatible.
 
-[Unreleased]: https://github.com/fernandostrive/codex-account/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/fernandostrive/codex-account/releases/tag/v0.1.0
+[Unreleased]: https://github.com/frndchagas/codex-account/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/frndchagas/codex-account/releases/tag/v0.1.0

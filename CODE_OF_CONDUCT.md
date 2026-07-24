@@ -57,7 +57,7 @@ an individual is officially representing the community in public spaces.
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be
 reported to the maintainers by opening a
-[private security advisory](https://github.com/fernandostrive/codex-account/security/advisories/new),
+[private security advisory](https://github.com/frndchagas/codex-account/security/advisories/new),
 which is the only private reporting channel this repository has. All complaints
 will be reviewed and investigated promptly and fairly.
 

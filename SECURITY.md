@@ -3,7 +3,7 @@
 ## Reporting a vulnerability
 
 Please report security issues privately through
-[GitHub Security Advisories](https://github.com/fernandostrive/codex-account/security/advisories/new)
+[GitHub Security Advisories](https://github.com/frndchagas/codex-account/security/advisories/new)
 rather than opening a public issue.
 
 Expect an initial response within 7 days. If a fix is warranted, we'll agree on
