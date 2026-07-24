@@ -39,7 +39,13 @@ Codex reopened.
 Requires `bash` (3.2+, so macOS's built-in shell works), plus `pgrep`. `jq` is
 used when present but is not required.
 
-**Homebrew** — not yet published. For now:
+**Homebrew:**
+
+```sh
+brew install frndchagas/tap/codex-account
+```
+
+Or from source:
 
 ```sh
 git clone https://github.com/frndchagas/codex-account.git
