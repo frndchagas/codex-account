@@ -17,7 +17,7 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Install shellcheck
         run: |
@@ -46,7 +46,7 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       # Pinned clone rather than a third-party action: this project handles
       # credentials, so CI dependencies stay auditable.
@@ -63,7 +63,7 @@ jobs:
   bash32:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Confirm /bin/bash is 3.2
         run: /bin/bash --version | head -1
