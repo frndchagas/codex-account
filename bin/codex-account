@@ -34,6 +34,11 @@ die() {
 }
 
 platform() {
+  if [ "${CODEX_ACCOUNT_TEST_MODE:-0}" = '1' ] && [ -n "${CODEX_ACCOUNT_FAKE_PLATFORM:-}" ]; then
+    printf '%s' "$CODEX_ACCOUNT_FAKE_PLATFORM"
+    return
+  fi
+
   case "$(uname -s)" in
     Darwin) printf 'macos' ;;
     Linux) printf 'linux' ;;

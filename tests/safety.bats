@@ -69,6 +69,7 @@ setup() {
   "$CODEX_ACCOUNT" save work
   sign_in_as 'personal@example.com' 'acct-personal'
 
+  export CODEX_ACCOUNT_FAKE_PLATFORM=macos
   export CODEX_ACCOUNT_FAKE_RUNNING=1 CODEX_ACCOUNT_FAKE_QUIT=canceled
   run "$CODEX_ACCOUNT" use work
   [ "$status" -eq 1 ]
@@ -81,6 +82,7 @@ setup() {
   "$CODEX_ACCOUNT" save work
   sign_in_as 'personal@example.com' 'acct-personal'
 
+  export CODEX_ACCOUNT_FAKE_PLATFORM=macos
   export CODEX_ACCOUNT_FAKE_RUNNING=1 CODEX_ACCOUNT_FAKE_QUIT=fails
   run "$CODEX_ACCOUNT" use work
   [ "$status" -eq 1 ]
@@ -136,4 +138,23 @@ setup() {
 
   run grep -c 'rt-personal' "$CODEX_HOME/auth.json"
   [ "$status" -eq 0 ]
+}
+
+@test "on Linux a running Codex is reported as a CLI session" {
+  sign_in_as 'work@example.com' 'acct-work'
+  "$CODEX_ACCOUNT" save work
+  sign_in_as 'personal@example.com' 'acct-personal'
+
+  export CODEX_ACCOUNT_FAKE_PLATFORM=linux CODEX_ACCOUNT_FAKE_RUNNING=1
+  run "$CODEX_ACCOUNT" use work
+  [ "$status" -eq 1 ]
+  [[ "$output" == *'CLI session is still running'* ]]
+  [[ "$output" != *'Quitting Codex'* ]]
+}
+
+@test "an unsupported platform is refused" {
+  export CODEX_ACCOUNT_FAKE_PLATFORM=unsupported
+  run "$CODEX_ACCOUNT" list
+  [ "$status" -eq 1 ]
+  [[ "$output" == *'unsupported platform'* ]]
 }
