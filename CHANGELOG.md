@@ -13,6 +13,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with validation and correct permissions, so credentials saved by hand no
   longer have to be copied manually.
 
+### Security
+
+- Profile names are no longer validated with `grep`, which is line-oriented and
+  succeeds on any matching line: a name containing a newline passed on the
+  strength of its first line alone, so the rest could hold arbitrary bytes.
+- E-mails read from the (deliberately unverified) `id_token`, and profile names
+  read back off disk, are stripped of control bytes before being printed. A
+  crafted credential could otherwise emit terminal escapes that rewrite the
+  output and hide which account is active.
+- A non-numeric `CODEX_ACCOUNT_QUIT_TIMEOUT` made the wait loop's test error
+  out, which read as "not expired yet" and never timed out.
+- The profiles directory mode is verified after `chmod` rather than assumed,
+  and a directory that cannot be brought to 0700 is now reported.
+- Dying between `mktemp` and `mv` no longer strands a complete credential under
+  the temporary name.
+
 ### Fixed
 
 - A declined quit dialog (AppleScript error -128) is now reported as such

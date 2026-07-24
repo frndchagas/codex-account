@@ -14,9 +14,7 @@ umask 077
 readonly PROGRAM_NAME='codex-account'
 readonly PROGRAM_VERSION='0.1.0'
 readonly QUIT_TIMEOUT_SECONDS="${CODEX_ACCOUNT_QUIT_TIMEOUT:-20}"
-
-# Profile names become file names: nothing that can escape the profiles dir.
-readonly PROFILE_NAME_PATTERN='^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'
+readonly PROFILE_NAME_MAX=64
 
 quiet=0
 
@@ -32,6 +30,19 @@ die() {
   printf '%s: %s\n' "$PROGRAM_NAME" "$*" >&2
   exit 1
 }
+
+# Emails come from a token we deliberately do not verify, and profile names are
+# read back off disk, so both can carry escape sequences that rewrite the
+# terminal. Strip control bytes; multibyte UTF-8 passes through untouched.
+printable() {
+  printf '%s' "$1" | tr -d '[:cntrl:]'
+}
+
+# A non-numeric value would make the wait loop's test error out, which reads as
+# "not expired yet" and never times out.
+case "$QUIT_TIMEOUT_SECONDS" in
+  '' | *[!0-9]*) die 'CODEX_ACCOUNT_QUIT_TIMEOUT must be a whole number of seconds' ;;
+esac
 
 platform() {
   if [ "${CODEX_ACCOUNT_TEST_MODE:-0}" = '1' ] && [ -n "${CODEX_ACCOUNT_FAKE_PLATFORM:-}" ]; then
@@ -61,13 +72,35 @@ profile_path() {
   printf '%s/%s.json' "$profiles_dir" "$1"
 }
 
+# -L on purpose: the profiles directory may be a symlink, and the mode that
+# matters is the one on the directory it resolves to.
+file_mode() {
+  stat -L -c '%a' "$1" 2>/dev/null || stat -L -f '%Lp' "$1" 2>/dev/null
+}
+
 ensure_profiles_dir() {
   if [ ! -d "$profiles_dir" ]; then
     mkdir -p "$profiles_dir"
   fi
   chmod 700 "$account_home" "$profiles_dir" 2>/dev/null || true
+
+  # 0700 is the only thing keeping saved tokens away from other accounts on the
+  # machine, and chmod cannot deliver it on a filesystem that ignores modes, so
+  # say so instead of leaving the promise silently broken. An empty mode means
+  # stat is unavailable and there is nothing to compare against.
+  local mode
+  mode="$(file_mode "$profiles_dir" || true)"
+
+  case "$mode" in
+    700 | '') ;;
+    *) warn "$profiles_dir has mode $mode, not 700; anyone on this machine may be able to read your tokens" ;;
+  esac
 }
 
+# Profile names become file names: nothing that can escape the profiles dir.
+# grep is line-oriented and -q succeeds on any matching line, so a name holding
+# a newline used to pass on the strength of its first line alone. The shell's
+# own pattern matching has no such blind spot.
 validate_profile_name() {
   local name="$1"
 
@@ -75,9 +108,15 @@ validate_profile_name() {
     die 'profile name must not be empty'
   fi
 
-  if ! printf '%s' "$name" | grep -Eq "$PROFILE_NAME_PATTERN"; then
-    die "invalid profile name: '$name' (use letters, digits, dot, dash or underscore; max 64 characters)"
+  if [ "${#name}" -gt "$PROFILE_NAME_MAX" ]; then
+    die "invalid profile name: longer than $PROFILE_NAME_MAX characters"
   fi
+
+  case "$name" in
+    [!A-Za-z0-9]* | *[!A-Za-z0-9._-]*)
+      die "invalid profile name: '$(printable "$name")' (use letters, digits, dot, dash or underscore; max $PROFILE_NAME_MAX characters)"
+      ;;
+  esac
 }
 
 json_string_field() {
@@ -153,7 +192,7 @@ credential_label() {
   email="$(credential_email "$file" 2>/dev/null || true)"
 
   if [ -n "$email" ]; then
-    printf '%s' "$email"
+    printable "$email"
   else
     printf '%s' 'unknown account'
   fi
@@ -395,13 +434,19 @@ active_credential_exists() {
 }
 
 # Temp file then rename, so an interrupted run leaves no half-written credential.
-install_credential() {
-  local source="$1" target="$2" temp
+# The trap covers the other half of that promise: dying between mktemp and mv
+# would otherwise strand a complete credential under the temporary name.
+temp_credential=''
+trap '[ -z "$temp_credential" ] || rm -f "$temp_credential"' EXIT
 
-  temp="$(mktemp "$target.XXXXXX")"
-  cat "$source" >"$temp"
-  chmod 600 "$temp"
-  mv -f "$temp" "$target"
+install_credential() {
+  local source="$1" target="$2"
+
+  temp_credential="$(mktemp "$target.XXXXXX")"
+  cat "$source" >"$temp_credential"
+  chmod 600 "$temp_credential"
+  mv -f "$temp_credential" "$target"
+  temp_credential=''
 }
 
 active_profile_name() {
@@ -472,10 +517,10 @@ sync_back_active_credential() {
 
   if origin="$(active_profile_name)"; then
     if [ "$dry_run" -eq 1 ]; then
-      info "Would update profile '$origin' with the current tokens."
+      info "Would update profile '$(printable "$origin")' with the current tokens."
     else
       install_credential "$auth_file" "$(profile_path "$origin")"
-      info "Updated profile '$origin' with the current tokens."
+      info "Updated profile '$(printable "$origin")' with the current tokens."
     fi
     [ "$dry_run" -eq 1 ] || rm -f "$auth_file"
     return 0
@@ -506,7 +551,7 @@ cmd_list() {
       marker=' '
     fi
 
-    printf '%s %-20s %s\n' "$marker" "$name" "$(credential_label "$profile")"
+    printf '%s %-20s %s\n' "$marker" "$(printable "$name")" "$(credential_label "$profile")"
   done
 
   if [ "$found" -eq 0 ]; then
@@ -536,7 +581,7 @@ cmd_current() {
   active="$(active_profile_name 2>/dev/null || true)"
 
   if [ -n "$active" ]; then
-    printf '%s (%s)\n' "$active" "$(credential_label "$auth_file")"
+    printf '%s (%s)\n' "$(printable "$active")" "$(credential_label "$auth_file")"
   else
     printf '%s (not saved as a profile)\n' "$(credential_label "$auth_file")"
   fi

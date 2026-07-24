@@ -158,3 +158,84 @@ setup() {
   [ "$status" -eq 1 ]
   [[ "$output" == *'unsupported platform'* ]]
 }
+
+@test "a profile name cannot smuggle a second line past validation" {
+  sign_in_as 'work@example.com' 'acct-work'
+
+  run "$CODEX_ACCOUNT" save "$(printf 'ok\nEVIL')"
+  [ "$status" -ne 0 ]
+
+  run "$CODEX_ACCOUNT" save "$(printf 'ok\n../../escaped')"
+  [ "$status" -ne 0 ]
+
+  [ -z "$(find "$CODEX_ACCOUNT_HOME" -name '*EVIL*' 2>/dev/null)" ]
+  [ ! -e "$BATS_TEST_TMPDIR/escaped.json" ]
+}
+
+@test "a profile name cannot carry terminal escapes" {
+  sign_in_as 'work@example.com' 'acct-work'
+
+  run "$CODEX_ACCOUNT" save "$(printf 'ok\n\033[31mfake')"
+  [ "$status" -ne 0 ]
+  [[ "$output" != *$'\033'* ]]
+}
+
+@test "an over-long profile name is refused" {
+  sign_in_as 'work@example.com' 'acct-work'
+
+  run "$CODEX_ACCOUNT" save "$(printf 'a%.0s' $(seq 65))"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *'64 characters'* ]]
+}
+
+@test "terminal escapes in a credential email never reach the output" {
+  local claims
+  claims="$(printf '{"email":"\033[2K\rspoofed@example.com","email_verified":true}' | base64url)"
+  printf '{"auth_mode":"chatgpt","tokens":{"id_token":"hdr.%s.sig","refresh_token":"rt","account_id":"acct-evil"}}' \
+    "$claims" >"$CODEX_HOME/auth.json"
+  chmod 600 "$CODEX_HOME/auth.json"
+
+  "$CODEX_ACCOUNT" save evil
+
+  run "$CODEX_ACCOUNT" list
+  [[ "$output" == *'spoofed@example.com'* ]]
+  [[ "$output" != *$'\033'* ]]
+  [[ "$output" != *$'\r'* ]]
+
+  run "$CODEX_ACCOUNT" current
+  [[ "$output" != *$'\033'* ]]
+}
+
+@test "a non-numeric quit timeout is refused instead of looping forever" {
+  sign_in_as 'work@example.com' 'acct-work'
+
+  export CODEX_ACCOUNT_QUIT_TIMEOUT=abc
+  run "$CODEX_ACCOUNT" list
+  [ "$status" -eq 1 ]
+  [[ "$output" == *'whole number of seconds'* ]]
+}
+
+@test "a symlinked profiles directory is not mistaken for a loose one" {
+  sign_in_as 'work@example.com' 'acct-work'
+
+  mkdir -p "$CODEX_ACCOUNT_HOME" "$BATS_TEST_TMPDIR/elsewhere"
+  chmod 700 "$BATS_TEST_TMPDIR/elsewhere"
+  ln -s "$BATS_TEST_TMPDIR/elsewhere" "$CODEX_ACCOUNT_HOME/profiles"
+
+  run "$CODEX_ACCOUNT" save work
+  [ "$status" -eq 0 ]
+  [[ "$output" != *'not 700'* ]]
+  [ -f "$BATS_TEST_TMPDIR/elsewhere/work.json" ]
+}
+
+@test "a failed install leaves no temporary credential behind" {
+  sign_in_as 'work@example.com' 'acct-work' 'rt-leaked'
+  "$CODEX_ACCOUNT" save work
+  sign_in_as 'personal@example.com' 'acct-personal'
+
+  export CODEX_ACCOUNT_FAKE_RUNNING=1 CODEX_ACCOUNT_FAKE_QUIT_FAILS=1
+  run "$CODEX_ACCOUNT" use work
+  [ "$status" -eq 1 ]
+
+  [ -z "$(find "$CODEX_ACCOUNT_HOME" "$CODEX_HOME" -name '*.json.??????' 2>/dev/null)" ]
+}
