@@ -23,7 +23,7 @@ setup() {
 
   run "$CODEX_ACCOUNT" save work
   [ "$status" -eq 1 ]
-  [[ "$output" == *'symlink'* ]]
+  [[ "$output" == *'symlink'* ]] || return 1
   [ "$(cat "$BATS_TEST_TMPDIR/elsewhere")" = 'not a credential' ]
 }
 
@@ -36,10 +36,10 @@ setup() {
   export CODEX_ACCOUNT_FAKE_RUNNING=1 CODEX_ACCOUNT_FAKE_QUIT_FAILS=1
   run "$CODEX_ACCOUNT" use work
   [ "$status" -eq 1 ]
-  [[ "$output" == *'no credential was changed'* ]]
+  [[ "$output" == *'no credential was changed'* ]] || return 1
 
   run "$CODEX_ACCOUNT" current
-  [[ "$output" == *'personal'* ]]
+  [[ "$output" == *'personal'* ]] || return 1
 }
 
 @test "being launched from inside Codex is refused" {
@@ -50,7 +50,7 @@ setup() {
   export CODEX_ACCOUNT_FAKE_RUNNING=1 CODEX_ACCOUNT_FAKE_INSIDE=1
   run "$CODEX_ACCOUNT" use work
   [ "$status" -eq 1 ]
-  [[ "$output" == *'inside Codex'* ]]
+  [[ "$output" == *'inside Codex'* ]] || return 1
 }
 
 @test "an open CLI session blocks the switch" {
@@ -61,7 +61,7 @@ setup() {
   export CODEX_ACCOUNT_FAKE_CLI_RUNNING=1
   run "$CODEX_ACCOUNT" use work
   [ "$status" -eq 1 ]
-  [[ "$output" == *'CLI session is still running'* ]]
+  [[ "$output" == *'CLI session is still running'* ]] || return 1
 }
 
 @test "a declined quit dialog is reported as such" {
@@ -73,8 +73,8 @@ setup() {
   export CODEX_ACCOUNT_FAKE_RUNNING=1 CODEX_ACCOUNT_FAKE_QUIT=canceled
   run "$CODEX_ACCOUNT" use work
   [ "$status" -eq 1 ]
-  [[ "$output" == *'confirmation dialog'* ]]
-  [[ "$output" == *'no credential was changed'* ]]
+  [[ "$output" == *'confirmation dialog'* ]] || return 1
+  [[ "$output" == *'no credential was changed'* ]] || return 1
 }
 
 @test "an unreachable app is reported differently from a declined dialog" {
@@ -86,8 +86,8 @@ setup() {
   export CODEX_ACCOUNT_FAKE_RUNNING=1 CODEX_ACCOUNT_FAKE_QUIT=fails
   run "$CODEX_ACCOUNT" use work
   [ "$status" -eq 1 ]
-  [[ "$output" == *'could not ask Codex to quit'* ]]
-  [[ "$output" != *'confirmation dialog'* ]]
+  [[ "$output" == *'could not ask Codex to quit'* ]] || return 1
+  [[ "$output" != *'confirmation dialog'* ]] || return 1
 }
 
 @test "the caller's own process tree is not mistaken for an app-server" {
@@ -101,7 +101,7 @@ setup() {
 
   run bash -c ': codex app-server; "$1" list' _ "$CODEX_ACCOUNT"
   [ "$status" -eq 0 ]
-  [[ "$output" == *'work'* ]]
+  [[ "$output" == *'work'* ]] || return 1
 }
 
 @test "profiles are written 0600 inside a 0700 directory" {
@@ -119,12 +119,12 @@ setup() {
   "$CODEX_ACCOUNT" save personal
 
   run "$CODEX_ACCOUNT" use work
-  [[ "$output" != *'rt-super-secret'* ]]
-  [[ "$output" != *'rt-also-secret'* ]]
-  [[ "$output" != *'hdr.'* ]]
+  [[ "$output" != *'rt-super-secret'* ]] || return 1
+  [[ "$output" != *'rt-also-secret'* ]] || return 1
+  [[ "$output" != *'hdr.'* ]] || return 1
 
   run "$CODEX_ACCOUNT" list
-  [[ "$output" != *'rt-'* ]]
+  [[ "$output" != *'rt-'* ]] || return 1
 }
 
 @test "a failed switch leaves the previous credential intact" {
@@ -148,15 +148,15 @@ setup() {
   export CODEX_ACCOUNT_FAKE_PLATFORM=linux CODEX_ACCOUNT_FAKE_RUNNING=1
   run "$CODEX_ACCOUNT" use work
   [ "$status" -eq 1 ]
-  [[ "$output" == *'CLI session is still running'* ]]
-  [[ "$output" != *'Quitting Codex'* ]]
+  [[ "$output" == *'CLI session is still running'* ]] || return 1
+  [[ "$output" != *'Quitting Codex'* ]] || return 1
 }
 
 @test "an unsupported platform is refused" {
   export CODEX_ACCOUNT_FAKE_PLATFORM=unsupported
   run "$CODEX_ACCOUNT" list
   [ "$status" -eq 1 ]
-  [[ "$output" == *'unsupported platform'* ]]
+  [[ "$output" == *'unsupported platform'* ]] || return 1
 }
 
 @test "a profile name cannot smuggle a second line past validation" {
@@ -177,7 +177,7 @@ setup() {
 
   run "$CODEX_ACCOUNT" save "$(printf 'ok\n\033[31mfake')"
   [ "$status" -ne 0 ]
-  [[ "$output" != *$'\033'* ]]
+  [[ "$output" != *$'\033'* ]] || return 1
 }
 
 @test "an over-long profile name is refused" {
@@ -185,12 +185,15 @@ setup() {
 
   run "$CODEX_ACCOUNT" save "$(printf 'a%.0s' $(seq 65))"
   [ "$status" -ne 0 ]
-  [[ "$output" == *'64 characters'* ]]
+  [[ "$output" == *'64 characters'* ]] || return 1
 }
 
 @test "terminal escapes in a credential email never reach the output" {
+  # The escape is written as a JSON \u sequence rather than a raw ESC byte:
+  # control characters have to be escaped for this to be valid JSON, and jq
+  # rejects the whole credential otherwise.
   local claims
-  claims="$(printf '{"email":"\033[2K\rspoofed@example.com","email_verified":true}' | base64url)"
+  claims="$(printf '{"email":"\\u001b[2K\\rspoofed@example.com","email_verified":true}' | base64url)"
   printf '{"auth_mode":"chatgpt","tokens":{"id_token":"hdr.%s.sig","refresh_token":"rt","account_id":"acct-evil"}}' \
     "$claims" >"$CODEX_HOME/auth.json"
   chmod 600 "$CODEX_HOME/auth.json"
@@ -198,12 +201,12 @@ setup() {
   "$CODEX_ACCOUNT" save evil
 
   run "$CODEX_ACCOUNT" list
-  [[ "$output" == *'spoofed@example.com'* ]]
-  [[ "$output" != *$'\033'* ]]
-  [[ "$output" != *$'\r'* ]]
+  [[ "$output" == *'spoofed@example.com'* ]] || return 1
+  [[ "$output" != *$'\033'* ]] || return 1
+  [[ "$output" != *$'\r'* ]] || return 1
 
   run "$CODEX_ACCOUNT" current
-  [[ "$output" != *$'\033'* ]]
+  [[ "$output" != *$'\033'* ]] || return 1
 }
 
 @test "a non-numeric quit timeout is refused instead of looping forever" {
@@ -212,7 +215,7 @@ setup() {
   export CODEX_ACCOUNT_QUIT_TIMEOUT=abc
   run "$CODEX_ACCOUNT" list
   [ "$status" -eq 1 ]
-  [[ "$output" == *'whole number of seconds'* ]]
+  [[ "$output" == *'whole number of seconds'* ]] || return 1
 }
 
 @test "a symlinked profiles directory is not mistaken for a loose one" {
@@ -224,7 +227,7 @@ setup() {
 
   run "$CODEX_ACCOUNT" save work
   [ "$status" -eq 0 ]
-  [[ "$output" != *'not 700'* ]]
+  [[ "$output" != *'not 700'* ]] || return 1
   [ -f "$BATS_TEST_TMPDIR/elsewhere/work.json" ]
 }
 
@@ -240,8 +243,8 @@ setup() {
   # 'real' is identified by tokens.account_id, so the decoy's top-level copy
   # must not make it look active.
   run "$CODEX_ACCOUNT" current
-  [[ "$output" == *'decoy'* ]]
-  [[ "$output" != *'real'* ]]
+  [[ "$output" == *'decoy'* ]] || return 1
+  [[ "$output" != *'real'* ]] || return 1
 }
 
 @test "the sed fallback reads the same account id as jq" {
@@ -255,8 +258,8 @@ setup() {
   export CODEX_ACCOUNT_FAKE_NO_JQ=1
   run "$CODEX_ACCOUNT" current
   [ "$output" = "$with_jq" ]
-  [[ "$output" == *'work'* ]]
-  [[ "$output" == *'work@example.com'* ]]
+  [[ "$output" == *'work'* ]] || return 1
+  [[ "$output" == *'work@example.com'* ]] || return 1
 }
 
 @test "the sed fallback is not fooled by a duplicated account id either" {
@@ -270,8 +273,8 @@ setup() {
 
   export CODEX_ACCOUNT_FAKE_NO_JQ=1
   run "$CODEX_ACCOUNT" current
-  [[ "$output" == *'decoy'* ]]
-  [[ "$output" != *'real'* ]]
+  [[ "$output" == *'decoy'* ]] || return 1
+  [[ "$output" != *'real'* ]] || return 1
 }
 
 @test "archived credentials stay visible in list" {
@@ -280,9 +283,9 @@ setup() {
   "$CODEX_ACCOUNT" forget
 
   run "$CODEX_ACCOUNT" list
-  [[ "$output" == *'archived'* ]]
-  [[ "$output" == *'still hold working credentials'* ]]
-  [[ "$output" != *'rt-still-valid'* ]]
+  [[ "$output" == *'archived'* ]] || return 1
+  [[ "$output" == *'still hold working credentials'* ]] || return 1
+  [[ "$output" != *'rt-still-valid'* ]] || return 1
 }
 
 @test "a failed install leaves no temporary credential behind" {

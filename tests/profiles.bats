@@ -11,13 +11,13 @@ setup() {
   run "$CODEX_ACCOUNT" save work
   [ "$status" -eq 0 ]
   [ -f "$(profile_file work)" ]
-  [[ "$output" == *'work@example.com'* ]]
+  [[ "$output" == *'work@example.com'* ]] || return 1
 }
 
 @test "save refuses when nobody is signed in" {
   run "$CODEX_ACCOUNT" save work
   [ "$status" -eq 1 ]
-  [[ "$output" == *'no active sign-in'* ]]
+  [[ "$output" == *'no active sign-in'* ]] || return 1
 }
 
 @test "save refuses to overwrite without --force" {
@@ -27,7 +27,7 @@ setup() {
   sign_in_as 'other@example.com' 'acct-other'
   run "$CODEX_ACCOUNT" save work
   [ "$status" -eq 1 ]
-  [[ "$output" == *'already exists'* ]]
+  [[ "$output" == *'already exists'* ]] || return 1
 
   run "$CODEX_ACCOUNT" --force save work
   [ "$status" -eq 0 ]
@@ -41,8 +41,8 @@ setup() {
 
   run "$CODEX_ACCOUNT" list
   [ "$status" -eq 0 ]
-  [[ "$output" == *'* personal'* ]]
-  [[ "$output" != *'* work'* ]]
+  [[ "$output" == *'* personal'* ]] || return 1
+  [[ "$output" != *'* work'* ]] || return 1
 }
 
 @test "use switches the active credential" {
@@ -55,7 +55,7 @@ setup() {
   [ "$status" -eq 0 ]
 
   run "$CODEX_ACCOUNT" current
-  [[ "$output" == *'work (work@example.com)'* ]]
+  [[ "$output" == *'work (work@example.com)'* ]] || return 1
 }
 
 @test "use is a no-op when the profile is already active" {
@@ -64,13 +64,13 @@ setup() {
 
   run "$CODEX_ACCOUNT" use work
   [ "$status" -eq 0 ]
-  [[ "$output" == *'Already signed in'* ]]
+  [[ "$output" == *'Already signed in'* ]] || return 1
 }
 
 @test "use rejects an unknown profile" {
   run "$CODEX_ACCOUNT" use ghost
   [ "$status" -eq 1 ]
-  [[ "$output" == *'no such profile'* ]]
+  [[ "$output" == *'no such profile'* ]] || return 1
 }
 
 @test "use writes refreshed tokens back to the origin profile" {
@@ -100,7 +100,7 @@ setup() {
 @test "forget is idempotent" {
   run "$CODEX_ACCOUNT" forget
   [ "$status" -eq 0 ]
-  [[ "$output" == *'Already signed out'* ]]
+  [[ "$output" == *'Already signed out'* ]] || return 1
 }
 
 @test "remove deletes an inactive profile" {
@@ -119,7 +119,7 @@ setup() {
 
   run "$CODEX_ACCOUNT" remove work
   [ "$status" -eq 1 ]
-  [[ "$output" == *'currently active'* ]]
+  [[ "$output" == *'currently active'* ]] || return 1
 
   run "$CODEX_ACCOUNT" --force remove work
   [ "$status" -eq 0 ]
@@ -155,7 +155,7 @@ setup() {
 
   sign_in_as 'work@example.com' 'acct-work' 'rt-two'
   run "$CODEX_ACCOUNT" current
-  [[ "$output" == *'work (work@example.com)'* ]]
+  [[ "$output" == *'work (work@example.com)'* ]] || return 1
 }
 
 @test "a credential without a readable e-mail still works" {
@@ -163,7 +163,7 @@ setup() {
 
   run "$CODEX_ACCOUNT" save weird
   [ "$status" -eq 0 ]
-  [[ "$output" == *'unknown account'* ]]
+  [[ "$output" == *'unknown account'* ]] || return 1
 }
 
 @test "--dry-run changes nothing" {
@@ -174,8 +174,8 @@ setup() {
 
   run "$CODEX_ACCOUNT" --dry-run use work
   [ "$status" -eq 0 ]
-  [[ "$output" == *'Would switch'* ]]
+  [[ "$output" == *'Would switch'* ]] || return 1
 
   run "$CODEX_ACCOUNT" current
-  [[ "$output" == *'personal'* ]]
+  [[ "$output" == *'personal'* ]] || return 1
 }
