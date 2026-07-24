@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-24
+
 ### Added
 
 - `import <file> <name>` turns an existing credential file into a profile,
@@ -65,5 +67,6 @@ Initial release.
 - `--dry-run` for every mutating command.
 - macOS and Linux support; bash 3.2 compatible.
 
-[Unreleased]: https://github.com/frndchagas/codex-account/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/frndchagas/codex-account/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/frndchagas/codex-account/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/frndchagas/codex-account/releases/tag/v0.1.0
