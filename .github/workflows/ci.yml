@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  BATS_VERSION: v1.14.0
+  SHFMT_VERSION: v3.12.0
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install shellcheck
+        run: |
+          command -v shellcheck >/dev/null || {
+            sudo apt-get update
+            sudo apt-get install -y shellcheck
+          }
+
+      - name: Lint
+        run: shellcheck bin/codex-account
+
+      - name: Install shfmt
+        run: |
+          curl -fsSLo "$RUNNER_TEMP/shfmt" \
+            "https://github.com/mvdan/sh/releases/download/$SHFMT_VERSION/shfmt_${SHFMT_VERSION}_linux_amd64"
+          chmod +x "$RUNNER_TEMP/shfmt"
+
+      - name: Check formatting
+        run: "$RUNNER_TEMP/shfmt" -i 2 -ci -d bin/codex-account tests
+
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+
+      # Pinned clone rather than a third-party action: this project handles
+      # credentials, so CI dependencies stay auditable.
+      - name: Install bats
+        run: |
+          git clone --depth 1 --branch "$BATS_VERSION" \
+            https://github.com/bats-core/bats-core.git "$RUNNER_TEMP/bats"
+
+      - name: Run tests
+        run: "$RUNNER_TEMP/bats/bin/bats" tests
+
+  # macOS ships bash 3.2 and that is what most users will run this under.
+  bash32:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Confirm /bin/bash is 3.2
+        run: /bin/bash --version | head -1
+
+      - name: Install bats
+        run: |
+          git clone --depth 1 --branch "$BATS_VERSION" \
+            https://github.com/bats-core/bats-core.git "$RUNNER_TEMP/bats"
+
+      - name: Run tests under bash 3.2
+        run: /bin/bash "$RUNNER_TEMP/bats/bin/bats" tests

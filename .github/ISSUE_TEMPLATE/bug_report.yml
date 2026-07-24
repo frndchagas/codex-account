@@ -1,0 +1,59 @@
+name: Bug report
+description: Something behaved incorrectly
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Never paste the contents of `auth.json` or a saved profile.** They are
+        working credentials. Redact anything that looks like a token.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you ran, what you expected, and what you got instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. codex-account save work
+        2. codex-account use personal
+        3. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: dry-run
+    attributes:
+      label: Output of the command with --dry-run
+      description: Helps a lot, and changes nothing on your machine.
+      render: console
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `codex-account --version`
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: OS and shell
+      description: Output of `uname -sr` and `bash --version | head -1`
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: credentials
+    attributes:
+      label: Confirmation
+      options:
+        - label: I have not included any token or credential contents in this report.
+          required: true
