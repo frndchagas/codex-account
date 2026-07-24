@@ -1,0 +1,6 @@
+shell=bash
+severity=style
+enable=avoid-nullary-conditions
+enable=check-unassigned-uppercase
+enable=deprecate-which
+enable=quote-safe-variables

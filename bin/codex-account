@@ -1,0 +1,717 @@
+#!/usr/bin/env bash
+#
+# codex-account — switch between multiple local Codex sign-ins.
+#
+# Signing out through the app revokes the tokens server-side, which also kills
+# the browser session you would otherwise reuse to sign back in. This tool never
+# revokes anything: it only moves ~/.codex/auth.json around.
+#
+# SPDX-License-Identifier: MIT
+
+set -euo pipefail
+umask 077
+
+readonly PROGRAM_NAME='codex-account'
+readonly PROGRAM_VERSION='0.1.0'
+readonly QUIT_TIMEOUT_SECONDS="${CODEX_ACCOUNT_QUIT_TIMEOUT:-20}"
+
+# Profile names become file names: nothing that can escape the profiles dir.
+readonly PROFILE_NAME_PATTERN='^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'
+
+quiet=0
+
+info() {
+  [ "$quiet" -eq 1 ] || printf '%s\n' "$*"
+}
+
+warn() {
+  printf '%s: %s\n' "$PROGRAM_NAME" "$*" >&2
+}
+
+die() {
+  printf '%s: %s\n' "$PROGRAM_NAME" "$*" >&2
+  exit 1
+}
+
+platform() {
+  case "$(uname -s)" in
+    Darwin) printf 'macos' ;;
+    Linux) printf 'linux' ;;
+    *) printf 'unsupported' ;;
+  esac
+}
+
+PLATFORM="$(platform)"
+readonly PLATFORM
+
+# Profiles live outside CODEX_HOME so Codex never mistakes them for its own state.
+codex_home="${CODEX_HOME:-${HOME:?HOME is not set}/.codex}"
+auth_file="$codex_home/auth.json"
+
+default_data_home="${XDG_DATA_HOME:-$HOME/.local/share}"
+account_home="${CODEX_ACCOUNT_HOME:-$default_data_home/$PROGRAM_NAME}"
+profiles_dir="$account_home/profiles"
+
+profile_path() {
+  printf '%s/%s.json' "$profiles_dir" "$1"
+}
+
+ensure_profiles_dir() {
+  if [ ! -d "$profiles_dir" ]; then
+    mkdir -p "$profiles_dir"
+  fi
+  chmod 700 "$account_home" "$profiles_dir" 2>/dev/null || true
+}
+
+validate_profile_name() {
+  local name="$1"
+
+  if [ -z "$name" ]; then
+    die 'profile name must not be empty'
+  fi
+
+  if ! printf '%s' "$name" | grep -Eq "$PROFILE_NAME_PATTERN"; then
+    die "invalid profile name: '$name' (use letters, digits, dot, dash or underscore; max 64 characters)"
+  fi
+}
+
+# Only two fields are ever read from a credential file: account_id (stable
+# across token refreshes, so it identifies the account) and email (for display).
+# Tokens are never printed, logged or passed as arguments.
+
+json_string_field() {
+  local json="$1" key="$2"
+
+  if command -v jq >/dev/null 2>&1; then
+    printf '%s' "$json" | jq -r --arg k "$key" '..|objects|select(has($k))|.[$k]|strings' 2>/dev/null | head -n 1
+    return 0
+  fi
+
+  printf '%s' "$json" |
+    tr -d '\n' |
+    sed -n 's/.*"'"$key"'"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' |
+    head -n 1
+}
+
+base64_decode() {
+  if base64 --decode </dev/null >/dev/null 2>&1; then
+    base64 --decode 2>/dev/null
+  elif base64 -D </dev/null >/dev/null 2>&1; then
+    base64 -D 2>/dev/null
+  else
+    openssl base64 -d -A 2>/dev/null
+  fi
+}
+
+# Unverified on purpose: anyone able to rewrite this local file already owns the
+# session, so checking the signature would protect nothing.
+jwt_payload() {
+  local token="$1" payload
+
+  payload="${token#*.}"
+  payload="${payload%%.*}"
+  [ -n "$payload" ] || return 1
+
+  payload="$(printf '%s' "$payload" | tr '_-' '/+')"
+  case $((${#payload} % 4)) in
+    2) payload="$payload==" ;;
+    3) payload="$payload=" ;;
+    1) return 1 ;;
+  esac
+
+  printf '%s' "$payload" | base64_decode
+}
+
+credential_account_id() {
+  local file="$1" contents
+
+  [ -f "$file" ] || return 1
+  contents="$(cat "$file")" || return 1
+
+  json_string_field "$contents" 'account_id'
+}
+
+credential_email() {
+  local file="$1" contents id_token payload
+
+  [ -f "$file" ] || return 1
+  contents="$(cat "$file")" || return 1
+
+  id_token="$(json_string_field "$contents" 'id_token')"
+  [ -n "$id_token" ] || return 1
+
+  payload="$(jwt_payload "$id_token")" || return 1
+  json_string_field "$payload" 'email'
+}
+
+credential_label() {
+  local file="$1" email
+
+  email="$(credential_email "$file" 2>/dev/null || true)"
+
+  if [ -n "$email" ]; then
+    printf '%s' "$email"
+  else
+    printf '%s' 'unknown account'
+  fi
+}
+
+# Moving the credential while Codex runs is the one genuinely dangerous thing
+# here: the app holds the old tokens in memory and writes them back on exit,
+# silently clobbering whatever we just installed. Hence the guards below.
+
+# pgrep exits 1 for "no match" and >1 for real errors. Reading an error as
+# "nothing is running" would defeat the guard, so abort instead.
+pgrep_matches() {
+  local status=0
+
+  /usr/bin/pgrep "$@" >/dev/null 2>&1 || status=$?
+
+  case "$status" in
+    0) return 0 ;;
+    1) return 1 ;;
+    *) die 'unable to inspect running processes; no credential was changed' ;;
+  esac
+}
+
+fake_quit_done=0
+
+test_mode() {
+  [ "${CODEX_ACCOUNT_TEST_MODE:-0}" = '1' ]
+}
+
+# The app ships as ChatGPT.app but registers the bundle id com.openai.codex;
+# older builds used Codex.app.
+codex_desktop_running() {
+  if test_mode; then
+    [ "${CODEX_ACCOUNT_FAKE_RUNNING:-0}" = '1' ] && [ "$fake_quit_done" -eq 0 ]
+    return
+  fi
+
+  [ "$PLATFORM" = 'macos' ] || return 1
+
+  pgrep_matches -x ChatGPT ||
+    pgrep_matches -x Codex ||
+    pgrep_matches -f '/(ChatGPT|Codex)\.app/Contents/MacOS/'
+}
+
+codex_cli_running() {
+  if test_mode; then
+    [ "${CODEX_ACCOUNT_FAKE_CLI_RUNNING:-0}" = '1' ]
+    return
+  fi
+
+  pgrep_matches -f '[c]odex.*app-server'
+}
+
+codex_running() {
+  codex_desktop_running || codex_cli_running
+}
+
+# Launched from a terminal inside Codex, quitting the app would kill this script
+# mid-move, so walk the process tree and refuse.
+running_inside_codex() {
+  if [ "${CODEX_ACCOUNT_TEST_MODE:-0}" = '1' ]; then
+    [ "${CODEX_ACCOUNT_FAKE_INSIDE:-0}" = '1' ]
+    return
+  fi
+
+  [ "$PLATFORM" = 'macos' ] || return 1
+
+  local pid="$PPID" command parent
+
+  while [ "$pid" -gt 1 ] 2>/dev/null; do
+    command="$(/bin/ps -p "$pid" -o command= 2>/dev/null || true)"
+
+    case "$command" in
+      *'/ChatGPT.app/Contents/'* | *'/Codex.app/Contents/'*) return 0 ;;
+    esac
+
+    parent="$(/bin/ps -p "$pid" -o ppid= 2>/dev/null | tr -d '[:space:]' || true)"
+
+    case "$parent" in
+      '' | *[!0-9]*) break ;;
+    esac
+
+    [ "$parent" -ne "$pid" ] || break
+    pid="$parent"
+  done
+
+  return 1
+}
+
+# Driving the real app happens only here, and both short-circuit under
+# CODEX_ACCOUNT_TEST_MODE so a test run can never quit the user's actual Codex.
+ask_app_to_quit() {
+  if test_mode; then
+    [ "${CODEX_ACCOUNT_FAKE_QUIT_FAILS:-0}" = '1' ] && return 1
+    fake_quit_done=1
+    return 0
+  fi
+
+  /usr/bin/osascript -e 'tell application id "com.openai.codex" to quit' >/dev/null 2>&1 ||
+    /usr/bin/osascript -e 'tell application "ChatGPT" to quit' >/dev/null 2>&1
+}
+
+open_app() {
+  if test_mode; then
+    return 0
+  fi
+
+  /usr/bin/open -b com.openai.codex >/dev/null 2>&1 ||
+    { [ -d '/Applications/ChatGPT.app' ] && /usr/bin/open '/Applications/ChatGPT.app' >/dev/null 2>&1; } ||
+    { [ -d '/Applications/Codex.app' ] && /usr/bin/open '/Applications/Codex.app' >/dev/null 2>&1; }
+}
+
+quit_codex() {
+  if ! codex_running; then
+    return 0
+  fi
+
+  if running_inside_codex; then
+    warn 'this command was started from a terminal inside Codex'
+    die 'run it from a standalone terminal so the app can quit without killing this process'
+  fi
+
+  if [ "$PLATFORM" != 'macos' ] || ! codex_desktop_running; then
+    warn 'a Codex CLI session is still running'
+    die 'close it and try again; no credential was changed'
+  fi
+
+  info 'Quitting Codex...'
+
+  if ! ask_app_to_quit; then
+    die 'could not ask Codex to quit; no credential was changed'
+  fi
+
+  local waited=0
+  while codex_running; do
+    if [ "$waited" -ge "$QUIT_TIMEOUT_SECONDS" ]; then
+      warn "Codex did not shut down within ${QUIT_TIMEOUT_SECONDS}s"
+      die 'no credential was changed; close any Codex CLI or IDE session and try again'
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+
+  info 'Codex stopped.'
+}
+
+reopen_codex() {
+  [ "$reopen" -eq 1 ] || return 0
+  [ "$PLATFORM" = 'macos' ] || return 0
+
+  if open_app; then
+    info 'Codex reopened.'
+  else
+    warn 'could not reopen Codex automatically; open it manually'
+  fi
+}
+
+# A symlink would make us write through to an arbitrary path.
+reject_symlink() {
+  local file="$1"
+
+  if [ -L "$file" ]; then
+    die "refusing to operate on a symlink: $file"
+  fi
+}
+
+active_credential_exists() {
+  [ -f "$auth_file" ]
+}
+
+# Write to a temp file in the same directory, then rename: an interrupted run
+# never leaves a half-written credential in place.
+install_credential() {
+  local source="$1" target="$2" temp
+
+  temp="$(mktemp "$target.XXXXXX")"
+  cat "$source" >"$temp"
+  chmod 600 "$temp"
+  mv -f "$temp" "$target"
+}
+
+active_profile_name() {
+  local active_id profile name profile_id
+
+  active_credential_exists || return 1
+  active_id="$(credential_account_id "$auth_file" 2>/dev/null || true)"
+  [ -n "$active_id" ] || return 1
+
+  for profile in "$profiles_dir"/*.json; do
+    [ -e "$profile" ] || continue
+    profile_id="$(credential_account_id "$profile" 2>/dev/null || true)"
+
+    if [ -n "$profile_id" ] && [ "$profile_id" = "$active_id" ]; then
+      name="$(basename "$profile" .json)"
+      printf '%s' "$name"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+# An orphan is an active credential matching no saved profile — you signed in
+# without running `save`. Dropping it loses a real session, so archive by
+# default; --discard-orphan opts into the destructive path.
+archive_orphan_credential() {
+  local reason="$1" archive_dir timestamp target suffix
+
+  active_credential_exists || return 0
+
+  if [ "$discard_orphan" -eq 1 ]; then
+    info "Discarding the active sign-in ($(credential_label "$auth_file"))."
+    [ "$dry_run" -eq 1 ] || rm -f "$auth_file"
+    return 0
+  fi
+
+  archive_dir="$account_home/archive"
+  timestamp="$(date '+%Y%m%d-%H%M%S')"
+  target="$archive_dir/auth-$timestamp.json"
+  suffix=1
+
+  while [ -e "$target" ]; do
+    target="$archive_dir/auth-$timestamp.$suffix.json"
+    suffix=$((suffix + 1))
+  done
+
+  if [ "$dry_run" -eq 1 ]; then
+    info "Would archive the active sign-in ($(credential_label "$auth_file")) to $target"
+    return 0
+  fi
+
+  mkdir -p "$archive_dir"
+  chmod 700 "$archive_dir" 2>/dev/null || true
+  mv "$auth_file" "$target"
+  chmod 600 "$target"
+
+  info "Archived the active sign-in ($reason): $target"
+  info 'That file still contains working credentials. Treat it like a password.'
+}
+
+# Write the live credential back to its own profile before switching away.
+# Without this a profile keeps the refresh token it had when saved, and stops
+# working as soon as the server rotates it.
+sync_back_active_credential() {
+  local origin
+
+  active_credential_exists || return 0
+  reject_symlink "$auth_file"
+
+  if origin="$(active_profile_name)"; then
+    if [ "$dry_run" -eq 1 ]; then
+      info "Would update profile '$origin' with the current tokens."
+    else
+      install_credential "$auth_file" "$(profile_path "$origin")"
+      info "Updated profile '$origin' with the current tokens."
+    fi
+    [ "$dry_run" -eq 1 ] || rm -f "$auth_file"
+    return 0
+  fi
+
+  archive_orphan_credential 'not saved as a profile'
+}
+
+# ---------------------------------------------------------------------------
+# Commands
+# ---------------------------------------------------------------------------
+
+cmd_list() {
+  ensure_profiles_dir
+
+  local active found=0 profile name marker
+
+  active="$(active_profile_name 2>/dev/null || true)"
+
+  for profile in "$profiles_dir"/*.json; do
+    [ -e "$profile" ] || continue
+    found=1
+    name="$(basename "$profile" .json)"
+
+    if [ -n "$active" ] && [ "$name" = "$active" ]; then
+      marker='*'
+    else
+      marker=' '
+    fi
+
+    printf '%s %-20s %s\n' "$marker" "$name" "$(credential_label "$profile")"
+  done
+
+  if [ "$found" -eq 0 ]; then
+    info 'No profiles saved yet.'
+    info "Sign in to Codex, then run: $PROGRAM_NAME save <name>"
+    return 0
+  fi
+
+  if [ -z "$active" ]; then
+    if active_credential_exists; then
+      printf '\n%s\n' "Active sign-in ($(credential_label "$auth_file")) is not saved as a profile."
+      printf '%s\n' "Run '$PROGRAM_NAME save <name>' to keep it."
+    else
+      printf '\n%s\n' 'No active sign-in.'
+    fi
+  fi
+}
+
+cmd_current() {
+  local active
+
+  if ! active_credential_exists; then
+    info 'Not signed in.'
+    return 1
+  fi
+
+  active="$(active_profile_name 2>/dev/null || true)"
+
+  if [ -n "$active" ]; then
+    printf '%s (%s)\n' "$active" "$(credential_label "$auth_file")"
+  else
+    printf '%s (not saved as a profile)\n' "$(credential_label "$auth_file")"
+  fi
+}
+
+cmd_save() {
+  local name="$1" target
+
+  validate_profile_name "$name"
+  ensure_profiles_dir
+
+  active_credential_exists ||
+    die "no active sign-in found at $auth_file; sign in to Codex first"
+
+  reject_symlink "$auth_file"
+
+  target="$(profile_path "$name")"
+
+  if [ -e "$target" ] && [ "$force" -eq 0 ]; then
+    die "profile '$name' already exists; pass --force to overwrite it"
+  fi
+
+  if [ "$dry_run" -eq 1 ]; then
+    info "Would save the active sign-in ($(credential_label "$auth_file")) as '$name'."
+    return 0
+  fi
+
+  install_credential "$auth_file" "$target"
+  info "Saved '$name' ($(credential_label "$target"))."
+}
+
+cmd_use() {
+  local name="$1" source
+
+  validate_profile_name "$name"
+  ensure_profiles_dir
+
+  source="$(profile_path "$name")"
+
+  [ -f "$source" ] || die "no such profile: '$name' (run '$PROGRAM_NAME list')"
+  reject_symlink "$source"
+
+  if [ "$(active_profile_name 2>/dev/null || true)" = "$name" ]; then
+    info "Already signed in as '$name' ($(credential_label "$source"))."
+    return 0
+  fi
+
+  if [ "$dry_run" -eq 0 ]; then
+    quit_codex
+  fi
+
+  sync_back_active_credential
+
+  if [ "$dry_run" -eq 1 ]; then
+    info "Would switch to '$name' ($(credential_label "$source"))."
+    return 0
+  fi
+
+  # Re-check: the app may have restarted while we were writing files.
+  if codex_running; then
+    die 'Codex started again before the switch completed; run the command once more'
+  fi
+
+  mkdir -p "$codex_home"
+  install_credential "$source" "$auth_file"
+
+  info "Switched to '$name' ($(credential_label "$auth_file"))."
+  reopen_codex
+}
+
+cmd_forget() {
+  ensure_profiles_dir
+
+  if ! active_credential_exists; then
+    info 'Already signed out locally.'
+    reopen_codex
+    return 0
+  fi
+
+  reject_symlink "$auth_file"
+
+  if [ "$dry_run" -eq 0 ]; then
+    quit_codex
+  fi
+
+  sync_back_active_credential
+
+  if [ "$dry_run" -eq 1 ]; then
+    info 'Would sign out locally, leaving the server session intact.'
+    return 0
+  fi
+
+  if codex_running; then
+    die 'Codex started again before the sign-out completed; run the command once more'
+  fi
+
+  rm -f "$auth_file"
+
+  info 'Signed out locally. The server session was not revoked.'
+  reopen_codex
+}
+
+cmd_remove() {
+  local name="$1" target
+
+  validate_profile_name "$name"
+  ensure_profiles_dir
+
+  target="$(profile_path "$name")"
+  [ -f "$target" ] || die "no such profile: '$name'"
+
+  if [ "$(active_profile_name 2>/dev/null || true)" = "$name" ] && [ "$force" -eq 0 ]; then
+    die "profile '$name' is currently active; switch away first or pass --force"
+  fi
+
+  if [ "$dry_run" -eq 1 ]; then
+    info "Would remove profile '$name' ($(credential_label "$target"))."
+    return 0
+  fi
+
+  rm -f "$target"
+  info "Removed profile '$name'."
+  info "That account is still signed in on the server; run '$PROGRAM_NAME save' again to re-add it."
+}
+
+cmd_version() {
+  printf '%s %s\n' "$PROGRAM_NAME" "$PROGRAM_VERSION"
+}
+
+cmd_help() {
+  cat <<EOF
+$PROGRAM_NAME $PROGRAM_VERSION — switch between multiple local Codex sign-ins.
+
+Usage:
+  $PROGRAM_NAME list                  List saved profiles ('*' marks the active one)
+  $PROGRAM_NAME current               Show which account is signed in right now
+  $PROGRAM_NAME save <name>           Save the active sign-in as a profile
+  $PROGRAM_NAME use <name>            Switch to a saved profile
+  $PROGRAM_NAME forget                Sign out locally, without revoking the session
+  $PROGRAM_NAME remove <name>         Delete a saved profile
+  $PROGRAM_NAME version               Print the version
+  $PROGRAM_NAME help                  Show this help
+
+Options:
+  -n, --dry-run          Show what would happen; change nothing
+  -f, --force            Overwrite an existing profile, or remove the active one
+      --no-reopen        Do not reopen the Codex app afterwards (macOS)
+      --discard-orphan   Delete an unsaved active sign-in instead of archiving it
+  -q, --quiet            Only print warnings and errors
+  -h, --help             Show this help
+
+Environment:
+  CODEX_HOME             Codex data directory (default: ~/.codex)
+  CODEX_ACCOUNT_HOME     Where profiles are stored
+                         (default: \${XDG_DATA_HOME:-~/.local/share}/$PROGRAM_NAME)
+
+This tool never calls 'codex logout' and never contacts OpenAI. It only moves
+the local credential file, so every saved account keeps a valid session.
+
+Saved profiles contain working credentials. Treat that directory like a
+password store; it is created with 0700 and files with 0600.
+EOF
+}
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+dry_run=0
+force=0
+reopen=1
+discard_orphan=0
+
+main() {
+  local command='' args=()
+
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      -n | --dry-run) dry_run=1 ;;
+      -f | --force) force=1 ;;
+      --no-reopen) reopen=0 ;;
+      --discard-orphan) discard_orphan=1 ;;
+      -q | --quiet) quiet=1 ;;
+      -h | --help)
+        cmd_help
+        return 0
+        ;;
+      -v | --version)
+        cmd_version
+        return 0
+        ;;
+      --)
+        shift
+        args+=("$@")
+        break
+        ;;
+      -*)
+        warn "unknown option: $1"
+        cmd_help >&2
+        return 2
+        ;;
+      *) args+=("$1") ;;
+    esac
+    shift
+  done
+
+  if [ "${#args[@]}" -eq 0 ]; then
+    cmd_help
+    return 0
+  fi
+
+  command="${args[0]}"
+  args=("${args[@]:1}")
+
+  if [ "$PLATFORM" = 'unsupported' ]; then
+    die "unsupported platform: $(uname -s) (macOS and Linux are supported)"
+  fi
+
+  case "$command" in
+    list | ls) cmd_list ;;
+    current | whoami) cmd_current ;;
+    save)
+      [ "${#args[@]}" -eq 1 ] || die "usage: $PROGRAM_NAME save <name>"
+      cmd_save "${args[0]}"
+      ;;
+    use | switch)
+      [ "${#args[@]}" -eq 1 ] || die "usage: $PROGRAM_NAME use <name>"
+      cmd_use "${args[0]}"
+      ;;
+    forget | signout)
+      [ "${#args[@]}" -eq 0 ] || die "usage: $PROGRAM_NAME forget"
+      cmd_forget
+      ;;
+    remove | rm)
+      [ "${#args[@]}" -eq 1 ] || die "usage: $PROGRAM_NAME remove <name>"
+      cmd_remove "${args[0]}"
+      ;;
+    version) cmd_version ;;
+    help) cmd_help ;;
+    *)
+      warn "unknown command: $command"
+      cmd_help >&2
+      return 2
+      ;;
+  esac
+}
+
+main "$@"

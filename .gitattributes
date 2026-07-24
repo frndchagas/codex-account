@@ -1,0 +1,3 @@
+* text=auto eol=lf
+bin/codex-account text eol=lf
+*.bats text eol=lf

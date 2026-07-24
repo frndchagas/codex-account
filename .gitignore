@@ -1,0 +1,9 @@
+.DS_Store
+*.swp
+tests/bats-*/
+tmp/
+
+# Never commit credentials, even by accident.
+auth.json
+*.auth.json
+profiles/
