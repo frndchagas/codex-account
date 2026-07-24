@@ -119,15 +119,34 @@ validate_profile_name() {
   esac
 }
 
-json_string_field() {
-  local json="$1" key="$2"
+# Both readers take one named field out of one named object, falling back to the
+# top level for layouts that lack it. Searching the whole document instead let
+# the two disagree — jq returned the first match in traversal order, the greedy
+# sed the last — so a key repeated at two depths could name a different account
+# depending only on whether jq happened to be installed.
+have_jq() {
+  if [ "${CODEX_ACCOUNT_TEST_MODE:-0}" = '1' ] && [ "${CODEX_ACCOUNT_FAKE_NO_JQ:-0}" = '1' ]; then
+    return 1
+  fi
 
-  if command -v jq >/dev/null 2>&1; then
-    printf '%s' "$json" | jq -r --arg k "$key" '..|objects|select(has($k))|.[$k]|strings' 2>/dev/null | head -n 1
+  command -v jq >/dev/null 2>&1
+}
+
+json_string_field() {
+  local json="$1" object="$2" key="$3" scope
+
+  if have_jq; then
+    printf '%s' "$json" |
+      jq -r --arg o "$object" --arg k "$key" '((.[$o]|objects|.[$k]) // .[$k])|strings' 2>/dev/null |
+      head -n 1
     return 0
   fi
 
-  printf '%s' "$json" |
+  scope="$(printf '%s' "$json" | tr -d '\n' |
+    sed -n 's/.*"'"$object"'"[[:space:]]*:[[:space:]]*{\([^{}]*\)}.*/\1/p')"
+  [ -n "$scope" ] || scope="$json"
+
+  printf '%s' "$scope" |
     tr -d '\n' |
     sed -n 's/.*"'"$key"'"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' |
     head -n 1
@@ -170,7 +189,7 @@ credential_account_id() {
   [ -f "$file" ] || return 1
   contents="$(cat "$file")" || return 1
 
-  json_string_field "$contents" 'account_id'
+  json_string_field "$contents" 'tokens' 'account_id'
 }
 
 credential_email() {
@@ -179,11 +198,11 @@ credential_email() {
   [ -f "$file" ] || return 1
   contents="$(cat "$file")" || return 1
 
-  id_token="$(json_string_field "$contents" 'id_token')"
+  id_token="$(json_string_field "$contents" 'tokens' 'id_token')"
   [ -n "$id_token" ] || return 1
 
   payload="$(jwt_payload "$id_token")" || return 1
-  json_string_field "$payload" 'email'
+  json_string_field "$payload" '' 'email'
 }
 
 credential_label() {
@@ -533,6 +552,23 @@ sync_back_active_credential() {
 # Commands
 # ---------------------------------------------------------------------------
 
+# Archiving is the safe default, but the one-time notice scrolls away and these
+# files keep working forever. Something has to keep saying they are there.
+report_archive() {
+  local archive_dir="$account_home/archive" count noun
+
+  [ -d "$archive_dir" ] || return 0
+
+  count="$(find "$archive_dir" -maxdepth 1 -type f -name 'auth-*.json' 2>/dev/null | wc -l | tr -d '[:space:]')"
+  [ -n "$count" ] && [ "$count" -gt 0 ] || return 0
+
+  noun='sign-in'
+  [ "$count" -eq 1 ] || noun='sign-ins'
+
+  printf '\n%s\n' "$count archived $noun in $archive_dir still hold working credentials."
+  printf '%s\n' 'Delete them once you no longer need those sessions.'
+}
+
 cmd_list() {
   ensure_profiles_dir
 
@@ -557,6 +593,7 @@ cmd_list() {
   if [ "$found" -eq 0 ]; then
     info 'No profiles saved yet.'
     info "Sign in to Codex, then run: $PROGRAM_NAME save <name>"
+    report_archive
     return 0
   fi
 
@@ -568,6 +605,8 @@ cmd_list() {
       printf '\n%s\n' 'No active sign-in.'
     fi
   fi
+
+  report_archive
 }
 
 cmd_current() {

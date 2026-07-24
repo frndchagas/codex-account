@@ -12,9 +12,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `import <file> <name>` turns an existing credential file into a profile,
   with validation and correct permissions, so credentials saved by hand no
   longer have to be copied manually.
+- `list` reports how many archived sign-ins are still on disk. Archiving is the
+  safe default for an unsaved credential, but the notice only appeared once,
+  and those files keep working indefinitely.
 
 ### Security
 
+- Credential fields are read from one named object rather than searched for
+  anywhere in the document. The old search let the two readers disagree — `jq`
+  returned the first match in traversal order, the greedy `sed` fallback the
+  last — so a repeated `account_id` could identify a different account
+  depending only on whether `jq` happened to be installed, and sync-back would
+  then write one account's tokens into another account's profile.
 - Profile names are no longer validated with `grep`, which is line-oriented and
   succeeds on any matching line: a name containing a newline passed on the
   strength of its first line alone, so the rest could hold arbitrary bytes.

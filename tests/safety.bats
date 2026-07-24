@@ -228,6 +228,63 @@ setup() {
   [ -f "$BATS_TEST_TMPDIR/elsewhere/work.json" ]
 }
 
+@test "a duplicated account id cannot name the wrong account" {
+  printf '{"account_id":"acct-decoy","tokens":{"account_id":"acct-real","refresh_token":"rt"}}' \
+    >"$CODEX_HOME/auth.json"
+  chmod 600 "$CODEX_HOME/auth.json"
+  "$CODEX_ACCOUNT" save real
+
+  sign_in_as 'other@example.com' 'acct-decoy'
+  "$CODEX_ACCOUNT" save decoy
+
+  # 'real' is identified by tokens.account_id, so the decoy's top-level copy
+  # must not make it look active.
+  run "$CODEX_ACCOUNT" current
+  [[ "$output" == *'decoy'* ]]
+  [[ "$output" != *'real'* ]]
+}
+
+@test "the sed fallback reads the same account id as jq" {
+  make_credential 'work@example.com' 'acct-real' >"$CODEX_HOME/auth.json"
+  chmod 600 "$CODEX_HOME/auth.json"
+  "$CODEX_ACCOUNT" save work
+
+  run "$CODEX_ACCOUNT" current
+  local with_jq="$output"
+
+  export CODEX_ACCOUNT_FAKE_NO_JQ=1
+  run "$CODEX_ACCOUNT" current
+  [ "$output" = "$with_jq" ]
+  [[ "$output" == *'work'* ]]
+  [[ "$output" == *'work@example.com'* ]]
+}
+
+@test "the sed fallback is not fooled by a duplicated account id either" {
+  printf '{"account_id":"acct-decoy","tokens":{"account_id":"acct-real","refresh_token":"rt"}}' \
+    >"$CODEX_HOME/auth.json"
+  chmod 600 "$CODEX_HOME/auth.json"
+  "$CODEX_ACCOUNT" save real
+
+  sign_in_as 'other@example.com' 'acct-decoy'
+  "$CODEX_ACCOUNT" save decoy
+
+  export CODEX_ACCOUNT_FAKE_NO_JQ=1
+  run "$CODEX_ACCOUNT" current
+  [[ "$output" == *'decoy'* ]]
+  [[ "$output" != *'real'* ]]
+}
+
+@test "archived credentials stay visible in list" {
+  sign_in_as 'orphan@example.com' 'acct-orphan' 'rt-still-valid'
+
+  "$CODEX_ACCOUNT" forget
+
+  run "$CODEX_ACCOUNT" list
+  [[ "$output" == *'archived'* ]]
+  [[ "$output" == *'still hold working credentials'* ]]
+  [[ "$output" != *'rt-still-valid'* ]]
+}
+
 @test "a failed install leaves no temporary credential behind" {
   sign_in_as 'work@example.com' 'acct-work' 'rt-leaked'
   "$CODEX_ACCOUNT" save work

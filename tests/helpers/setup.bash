@@ -12,6 +12,7 @@ setup_codex_account() {
   unset CODEX_ACCOUNT_FAKE_QUIT_FAILS
   unset CODEX_ACCOUNT_FAKE_QUIT
   unset CODEX_ACCOUNT_FAKE_PLATFORM
+  unset CODEX_ACCOUNT_FAKE_NO_JQ
 
   mkdir -p "$CODEX_HOME"
   CODEX_ACCOUNT="$BATS_TEST_DIRNAME/../bin/codex-account"
