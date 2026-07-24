@@ -20,8 +20,6 @@ base64url() {
   base64 | tr -d '\n' | tr '+/' '-_' | tr -d '='
 }
 
-# A credential file shaped like the real one: an unsigned JWT carrying the
-# e-mail, plus the account_id used to tell profiles apart.
 make_credential() {
   local email="$1" account_id="$2" refresh="${3:-rt-default}" claims
 

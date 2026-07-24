@@ -75,10 +75,6 @@ validate_profile_name() {
   fi
 }
 
-# Only two fields are ever read from a credential file: account_id (stable
-# across token refreshes, so it identifies the account) and email (for display).
-# Tokens are never printed, logged or passed as arguments.
-
 json_string_field() {
   local json="$1" key="$2"
 
@@ -122,6 +118,8 @@ jwt_payload() {
   printf '%s' "$payload" | base64_decode
 }
 
+# Stable across token refreshes, unlike the file contents, so this is what
+# identifies an account.
 credential_account_id() {
   local file="$1" contents
 
@@ -156,12 +154,8 @@ credential_label() {
   fi
 }
 
-# Moving the credential while Codex runs is the one genuinely dangerous thing
-# here: the app holds the old tokens in memory and writes them back on exit,
-# silently clobbering whatever we just installed. Hence the guards below.
-
 # pgrep exits 1 for "no match" and >1 for real errors. Reading an error as
-# "nothing is running" would defeat the guard, so abort instead.
+# "nothing is running" would defeat the guards, so abort instead.
 pgrep_matches() {
   local status=0
 
@@ -195,21 +189,57 @@ codex_desktop_running() {
     pgrep_matches -f '/(ChatGPT|Codex)\.app/Contents/MacOS/'
 }
 
+ancestor_pids() {
+  local pid="$PPID" parent
+
+  while [ "$pid" -gt 1 ] 2>/dev/null; do
+    printf '%s ' "$pid"
+    parent="$(/bin/ps -p "$pid" -o ppid= 2>/dev/null | tr -d '[:space:]' || true)"
+
+    case "$parent" in
+      '' | *[!0-9]*) break ;;
+    esac
+
+    [ "$parent" -ne "$pid" ] || break
+    pid="$parent"
+  done
+}
+
+# Any shell whose command line merely mentions these words matches a loose
+# pattern, so anchor to an executable name and drop our own process tree.
 codex_cli_running() {
   if test_mode; then
     [ "${CODEX_ACCOUNT_FAKE_CLI_RUNNING:-0}" = '1' ]
     return
   fi
 
-  pgrep_matches -f '[c]odex.*app-server'
+  local pids ancestors pid status=0
+
+  pids="$(/usr/bin/pgrep -f '(^|/)codex +app-server' 2>/dev/null)" || status=$?
+
+  case "$status" in
+    0) ;;
+    1) return 1 ;;
+    *) die 'unable to inspect running processes; no credential was changed' ;;
+  esac
+
+  ancestors=" $(ancestor_pids)$$ "
+
+  for pid in $pids; do
+    case "$ancestors" in
+      *" $pid "*) continue ;;
+      *) return 0 ;;
+    esac
+  done
+
+  return 1
 }
 
 codex_running() {
   codex_desktop_running || codex_cli_running
 }
 
-# Launched from a terminal inside Codex, quitting the app would kill this script
-# mid-move, so walk the process tree and refuse.
+# Quitting the app would kill this script mid-move if it launched us.
 running_inside_codex() {
   if [ "${CODEX_ACCOUNT_TEST_MODE:-0}" = '1' ]; then
     [ "${CODEX_ACCOUNT_FAKE_INSIDE:-0}" = '1' ]
@@ -242,15 +272,43 @@ running_inside_codex() {
 
 # Driving the real app happens only here, and both short-circuit under
 # CODEX_ACCOUNT_TEST_MODE so a test run can never quit the user's actual Codex.
+# AppleScript -128 means a confirmation dialog was declined, which the user has
+# to resolve on screen — not the same as failing to reach the app.
+readonly QUIT_OK=0
+readonly QUIT_FAILED=1
+readonly QUIT_CANCELED=2
+
+try_quit() {
+  local script="$1" output status=0
+
+  output="$(/usr/bin/osascript -e "$script" 2>&1)" || status=$?
+
+  case "$output" in
+    *-128*) return "$QUIT_CANCELED" ;;
+  esac
+
+  [ "$status" -eq 0 ] && return "$QUIT_OK"
+  return "$QUIT_FAILED"
+}
+
 ask_app_to_quit() {
   if test_mode; then
-    [ "${CODEX_ACCOUNT_FAKE_QUIT_FAILS:-0}" = '1' ] && return 1
+    case "${CODEX_ACCOUNT_FAKE_QUIT:-ok}" in
+      canceled) return "$QUIT_CANCELED" ;;
+      fails) return "$QUIT_FAILED" ;;
+    esac
+    [ "${CODEX_ACCOUNT_FAKE_QUIT_FAILS:-0}" = '1' ] && return "$QUIT_FAILED"
     fake_quit_done=1
-    return 0
+    return "$QUIT_OK"
   fi
 
-  /usr/bin/osascript -e 'tell application id "com.openai.codex" to quit' >/dev/null 2>&1 ||
-    /usr/bin/osascript -e 'tell application "ChatGPT" to quit' >/dev/null 2>&1
+  local status
+
+  try_quit 'tell application id "com.openai.codex" to quit' && return "$QUIT_OK"
+  status=$?
+  [ "$status" -eq "$QUIT_CANCELED" ] && return "$QUIT_CANCELED"
+
+  try_quit 'tell application "ChatGPT" to quit'
 }
 
 open_app() {
@@ -263,6 +321,8 @@ open_app() {
     { [ -d '/Applications/Codex.app' ] && /usr/bin/open '/Applications/Codex.app' >/dev/null 2>&1; }
 }
 
+# Codex writes its in-memory tokens back on exit, clobbering whatever we
+# installed, so nothing may move until it is confirmed stopped.
 quit_codex() {
   if ! codex_running; then
     return 0
@@ -280,9 +340,17 @@ quit_codex() {
 
   info 'Quitting Codex...'
 
-  if ! ask_app_to_quit; then
-    die 'could not ask Codex to quit; no credential was changed'
-  fi
+  local quit_status=0
+  ask_app_to_quit || quit_status=$?
+
+  case "$quit_status" in
+    "$QUIT_CANCELED")
+      warn 'Codex refused to quit — it is probably showing a confirmation dialog'
+      die 'answer it, or quit Codex yourself, then run this again; no credential was changed'
+      ;;
+    "$QUIT_OK") ;;
+    *) die 'could not ask Codex to quit; no credential was changed' ;;
+  esac
 
   local waited=0
   while codex_running; do
@@ -321,8 +389,7 @@ active_credential_exists() {
   [ -f "$auth_file" ]
 }
 
-# Write to a temp file in the same directory, then rename: an interrupted run
-# never leaves a half-written credential in place.
+# Temp file then rename, so an interrupted run leaves no half-written credential.
 install_credential() {
   local source="$1" target="$2" temp
 
@@ -353,9 +420,8 @@ active_profile_name() {
   return 1
 }
 
-# An orphan is an active credential matching no saved profile — you signed in
-# without running `save`. Dropping it loses a real session, so archive by
-# default; --discard-orphan opts into the destructive path.
+# An orphan is an active credential matching no saved profile. Dropping it loses
+# a real session, so archive by default.
 archive_orphan_credential() {
   local reason="$1" archive_dir timestamp target suffix
 
@@ -391,9 +457,8 @@ archive_orphan_credential() {
   info 'That file still contains working credentials. Treat it like a password.'
 }
 
-# Write the live credential back to its own profile before switching away.
-# Without this a profile keeps the refresh token it had when saved, and stops
-# working as soon as the server rotates it.
+# Without this a profile keeps the refresh token it had when saved, and dies as
+# soon as the server rotates it.
 sync_back_active_credential() {
   local origin
 
@@ -592,6 +657,40 @@ cmd_remove() {
   info "That account is still signed in on the server; run '$PROGRAM_NAME save' again to re-add it."
 }
 
+credential_looks_valid() {
+  [ -n "$(credential_account_id "$1" 2>/dev/null || true)" ]
+}
+
+cmd_import() {
+  local source="$1" name="$2" target
+
+  validate_profile_name "$name"
+  ensure_profiles_dir
+
+  [ -e "$source" ] || die "no such file: $source"
+  reject_symlink "$source"
+  [ -f "$source" ] || die "not a regular file: $source"
+  [ -r "$source" ] || die "cannot read: $source"
+
+  credential_looks_valid "$source" ||
+    die "$source does not look like a Codex credential (no account_id found)"
+
+  target="$(profile_path "$name")"
+
+  if [ -e "$target" ] && [ "$force" -eq 0 ]; then
+    die "profile '$name' already exists; pass --force to overwrite it"
+  fi
+
+  if [ "$dry_run" -eq 1 ]; then
+    info "Would import $source as '$name' ($(credential_label "$source"))."
+    return 0
+  fi
+
+  install_credential "$source" "$target"
+  info "Imported '$name' ($(credential_label "$target"))."
+  info "The source file is untouched and still holds credentials; delete it when you no longer need it."
+}
+
 cmd_version() {
   printf '%s %s\n' "$PROGRAM_NAME" "$PROGRAM_VERSION"
 }
@@ -604,6 +703,7 @@ Usage:
   $PROGRAM_NAME list                  List saved profiles ('*' marks the active one)
   $PROGRAM_NAME current               Show which account is signed in right now
   $PROGRAM_NAME save <name>           Save the active sign-in as a profile
+  $PROGRAM_NAME import <file> <name>  Save a credential file as a profile
   $PROGRAM_NAME use <name>            Switch to a saved profile
   $PROGRAM_NAME forget                Sign out locally, without revoking the session
   $PROGRAM_NAME remove <name>         Delete a saved profile
@@ -691,6 +791,10 @@ main() {
     save)
       [ "${#args[@]}" -eq 1 ] || die "usage: $PROGRAM_NAME save <name>"
       cmd_save "${args[0]}"
+      ;;
+    import)
+      [ "${#args[@]}" -eq 2 ] || die "usage: $PROGRAM_NAME import <file> <name>"
+      cmd_import "${args[0]}" "${args[1]}"
       ;;
     use | switch)
       [ "${#args[@]}" -eq 1 ] || die "usage: $PROGRAM_NAME use <name>"

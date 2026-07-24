@@ -64,6 +64,44 @@ setup() {
   [[ "$output" == *'CLI session is still running'* ]]
 }
 
+@test "a declined quit dialog is reported as such" {
+  sign_in_as 'work@example.com' 'acct-work'
+  "$CODEX_ACCOUNT" save work
+  sign_in_as 'personal@example.com' 'acct-personal'
+
+  export CODEX_ACCOUNT_FAKE_RUNNING=1 CODEX_ACCOUNT_FAKE_QUIT=canceled
+  run "$CODEX_ACCOUNT" use work
+  [ "$status" -eq 1 ]
+  [[ "$output" == *'confirmation dialog'* ]]
+  [[ "$output" == *'no credential was changed'* ]]
+}
+
+@test "an unreachable app is reported differently from a declined dialog" {
+  sign_in_as 'work@example.com' 'acct-work'
+  "$CODEX_ACCOUNT" save work
+  sign_in_as 'personal@example.com' 'acct-personal'
+
+  export CODEX_ACCOUNT_FAKE_RUNNING=1 CODEX_ACCOUNT_FAKE_QUIT=fails
+  run "$CODEX_ACCOUNT" use work
+  [ "$status" -eq 1 ]
+  [[ "$output" == *'could not ask Codex to quit'* ]]
+  [[ "$output" != *'confirmation dialog'* ]]
+}
+
+@test "the caller's own process tree is not mistaken for an app-server" {
+  sign_in_as 'work@example.com' 'acct-work'
+  "$CODEX_ACCOUNT" save work
+  sign_in_as 'personal@example.com' 'acct-personal'
+  "$CODEX_ACCOUNT" save personal
+
+  unset CODEX_ACCOUNT_TEST_MODE
+  export CODEX_ACCOUNT_QUIT_TIMEOUT=2
+
+  run bash -c ': codex app-server; "$1" list' _ "$CODEX_ACCOUNT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'work'* ]]
+}
+
 @test "profiles are written 0600 inside a 0700 directory" {
   sign_in_as 'work@example.com' 'acct-work'
   "$CODEX_ACCOUNT" save work

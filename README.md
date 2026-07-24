@@ -71,6 +71,7 @@ you run it — it handles your credentials.
 | `codex-account list` | List saved profiles; `*` marks the active one |
 | `codex-account current` | Show which account is signed in right now |
 | `codex-account save <name>` | Save the active sign-in under a name |
+| `codex-account import <file> <name>` | Save an existing credential file as a profile |
 | `codex-account use <name>` | Switch to a saved profile |
 | `codex-account forget` | Sign out locally, leaving the server session alive |
 | `codex-account remove <name>` | Delete a saved profile |
@@ -86,6 +87,19 @@ Options: `--dry-run`, `--force`, `--no-reopen`, `--discard-orphan`, `--quiet`.
 
 Step 2 matters: if you use the app's own **Log out** button, you revoke the
 session you just saved and the profile becomes useless.
+
+If you already have credential files lying around from swapping `auth.json` by
+hand, `import` turns them into profiles without re-authenticating:
+
+```sh
+codex-account import ~/.codex/auth.json.backup work
+```
+
+### When the app won't quit
+
+Codex asks for confirmation before closing if it has work in flight. If you
+decline that dialog, the switch aborts and says so — nothing is touched. Answer
+the dialog, or quit Codex yourself, then run the command again.
 
 ## How it works
 

@@ -73,8 +73,6 @@ setup() {
   [[ "$output" == *'no such profile'* ]]
 }
 
-# The whole point of sync-back: a profile must not keep the refresh token it had
-# when it was saved, or it dies the moment the server rotates it.
 @test "use writes refreshed tokens back to the origin profile" {
   sign_in_as 'work@example.com' 'acct-work' 'rt-original'
   "$CODEX_ACCOUNT" save work
@@ -155,7 +153,6 @@ setup() {
   sign_in_as 'work@example.com' 'acct-work' 'rt-one'
   "$CODEX_ACCOUNT" save work
 
-  # Same account, different tokens: still the same profile.
   sign_in_as 'work@example.com' 'acct-work' 'rt-two'
   run "$CODEX_ACCOUNT" current
   [[ "$output" == *'work (work@example.com)'* ]]

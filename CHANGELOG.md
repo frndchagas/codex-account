@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `import <file> <name>` turns an existing credential file into a profile,
+  with validation and correct permissions, so credentials saved by hand no
+  longer have to be copied manually.
+
+### Fixed
+
+- A declined quit dialog (AppleScript error -128) is now reported as such
+  instead of as a failure to reach the app, since the two need different
+  actions from the user.
+- App-server detection no longer matches the caller's own process tree. Any
+  shell whose command line merely mentioned `codex` and `app-server` used to
+  look like a running Codex and block the switch.
+
 ## [0.1.0] - 2026-07-24
 
 Initial release.
