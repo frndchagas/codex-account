@@ -90,6 +90,30 @@ setup() {
   [[ "$output" != *'confirmation dialog'* ]] || return 1
 }
 
+# The first command line is the desktop backend's, captured from a running
+# app: flags sit between 'codex' and 'app-server', so the pattern anchors on
+# the executable name alone. Every codex process holds auth.json in memory,
+# so the TUI and 'codex exec' must match too — while paths that merely
+# contain the word, like ~/.codex helpers, must not.
+@test "the codex pattern matches every credential-holding process" {
+  local pattern
+  pattern="$(sed -n "s/^readonly CODEX_PGREP_PATTERN='\(.*\)'\$/\1/p" "$CODEX_ACCOUNT")"
+  [ -n "$pattern" ]
+
+  printf '%s\n' '/Applications/ChatGPT.app/Contents/Resources/codex -c features.code_mode_host=true app-server --analytics-default-enabled' |
+    grep -qE "$pattern" || return 1
+  printf '%s\n' 'codex app-server' | grep -qE "$pattern" || return 1
+  printf '%s\n' 'codex' | grep -qE "$pattern" || return 1
+  printf '%s\n' 'codex resume' | grep -qE "$pattern" || return 1
+  printf '%s\n' '/usr/local/bin/codex exec ls' | grep -qE "$pattern" || return 1
+
+  ! printf '%s\n' 'vim codex-app-server.md' | grep -qE "$pattern" || return 1
+  ! printf '%s\n' '/usr/local/bin/codex-account use work' | grep -qE "$pattern" || return 1
+  ! printf '%s\n' 'grep codex app-server' | grep -qE "$pattern" || return 1
+  ! printf '%s\n' '/Users/u/.codex/mcp/github-mcp-server/github-mcp-server stdio' | grep -qE "$pattern" || return 1
+  ! printf '%s\n' '/bin/zsh /Users/u/Library/Application Support/Codex Screen Awake/codex-screen-awake.sh' | grep -qE "$pattern" || return 1
+}
+
 @test "the caller's own process tree is not mistaken for an app-server" {
   sign_in_as 'work@example.com' 'acct-work'
   "$CODEX_ACCOUNT" save work

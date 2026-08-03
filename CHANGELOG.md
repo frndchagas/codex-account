@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Every process running the codex binary — the TUI, `codex exec`, an IDE
+  session — now blocks a switch, not just an `app-server`. Each of them holds
+  `auth.json` in memory and writes it back on its own schedule, so proceeding
+  would corrupt the credential the same way; close the session and rerun.
+
+### Fixed
+
+- The quit wait now sees the desktop app's real backend. The app launches it
+  with flags between the binary and the subcommand (`codex -c
+  features.code_mode_host=true app-server`), which the old pattern did not
+  match, so the switch could proceed while that process was still shutting
+  down — and its exit write-back then clobbered the freshly installed
+  credential, leaving the reopened app unable to start new threads until it
+  was restarted by hand. The same blind spot let an orphaned backend slip
+  past the "CLI session is still running" guard.
+- Codex is only reopened after `use` or `forget` if the switch is what closed
+  it. It used to be launched unconditionally, including when it was not
+  running to begin with.
+
 ## [0.2.0] - 2026-07-24
 
 ### Added

@@ -87,6 +87,31 @@ setup() {
   [ "$status" -eq 0 ]
 }
 
+@test "use does not launch Codex when it was not running" {
+  sign_in_as 'work@example.com' 'acct-work'
+  "$CODEX_ACCOUNT" save work
+  sign_in_as 'personal@example.com' 'acct-personal'
+  "$CODEX_ACCOUNT" save personal
+
+  export CODEX_ACCOUNT_FAKE_PLATFORM=macos
+  run "$CODEX_ACCOUNT" use work
+  [ "$status" -eq 0 ]
+  [[ "$output" != *'Codex reopened.'* ]] || return 1
+}
+
+@test "use reopens Codex when the switch is what closed it" {
+  sign_in_as 'work@example.com' 'acct-work'
+  "$CODEX_ACCOUNT" save work
+  sign_in_as 'personal@example.com' 'acct-personal'
+  "$CODEX_ACCOUNT" save personal
+
+  export CODEX_ACCOUNT_FAKE_PLATFORM=macos CODEX_ACCOUNT_FAKE_RUNNING=1
+  run "$CODEX_ACCOUNT" use work
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'Quitting Codex...'* ]] || return 1
+  [[ "$output" == *'Codex reopened.'* ]] || return 1
+}
+
 @test "forget signs out locally and keeps the profile" {
   sign_in_as 'work@example.com' 'acct-work'
   "$CODEX_ACCOUNT" save work
@@ -101,6 +126,16 @@ setup() {
   run "$CODEX_ACCOUNT" forget
   [ "$status" -eq 0 ]
   [[ "$output" == *'Already signed out'* ]] || return 1
+}
+
+@test "forget does not launch Codex when it was not running" {
+  sign_in_as 'work@example.com' 'acct-work'
+  "$CODEX_ACCOUNT" save work
+
+  export CODEX_ACCOUNT_FAKE_PLATFORM=macos
+  run "$CODEX_ACCOUNT" forget
+  [ "$status" -eq 0 ]
+  [[ "$output" != *'Codex reopened.'* ]] || return 1
 }
 
 @test "remove deletes an inactive profile" {

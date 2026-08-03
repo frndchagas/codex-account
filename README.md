@@ -107,6 +107,11 @@ Codex asks for confirmation before closing if it has work in flight. If you
 decline that dialog, the switch aborts and says so — nothing is touched. Answer
 the dialog, or quit Codex yourself, then run the command again.
 
+An open `codex` CLI session — the TUI, `codex exec`, an IDE integration —
+blocks the switch for the same reason the app does: it holds the credential in
+memory and writes it back whenever it likes. Close it and run the command
+again.
+
 ## How it works
 
 On `use`, the tool:
@@ -118,7 +123,8 @@ On `use`, the tool:
 3. Writes the live credential back to its own profile, so refreshed tokens
    aren't lost.
 4. Installs the requested profile via a temp file and an atomic rename.
-5. Reopens Codex.
+5. Reopens Codex — but only if the switch is what closed it. If the app was
+   already closed when you ran the command, it stays closed.
 
 At no point does it contact OpenAI, call `codex logout`, or touch your browser.
 

@@ -16,6 +16,15 @@ readonly PROGRAM_VERSION='0.2.0'
 readonly QUIT_TIMEOUT_SECONDS="${CODEX_ACCOUNT_QUIT_TIMEOUT:-20}"
 readonly PROFILE_NAME_MAX=64
 
+# Anchored on the executable name alone, on purpose. Every process running
+# the codex binary — the TUI, 'codex exec', the desktop app's backend, which
+# hides its subcommand behind flags ('codex -c features.code_mode_host=true
+# app-server') — holds auth.json in memory and writes it back on its own
+# clock. Miss any of them and the switch races that write-back: the quit wait
+# declares Codex stopped while a backend is still shutting down, and the
+# freshly installed credential gets clobbered.
+readonly CODEX_PGREP_PATTERN='(^|/)codex( |$)'
+
 quiet=0
 
 info() {
@@ -268,8 +277,8 @@ ancestor_pids() {
   done
 }
 
-# Any shell whose command line merely mentions these words matches a loose
-# pattern, so anchor to an executable name and drop our own process tree.
+# Any shell whose command line merely mentions codex matches a loose pattern,
+# so anchor to the executable name and drop our own process tree.
 codex_cli_running() {
   if test_mode; then
     [ "${CODEX_ACCOUNT_FAKE_CLI_RUNNING:-0}" = '1' ]
@@ -278,7 +287,7 @@ codex_cli_running() {
 
   local pids ancestors pid status=0
 
-  pids="$(/usr/bin/pgrep -f '(^|/)codex +app-server' 2>/dev/null)" || status=$?
+  pids="$(/usr/bin/pgrep -f "$CODEX_PGREP_PATTERN" 2>/dev/null)" || status=$?
 
   case "$status" in
     0) ;;
@@ -384,12 +393,18 @@ open_app() {
     { [ -d '/Applications/Codex.app' ] && /usr/bin/open '/Applications/Codex.app' >/dev/null 2>&1; }
 }
 
+# Reopening is restoration, not a feature: launching Codex when the user had
+# it closed all along would be a surprise, so record who actually stopped it.
+codex_was_running=0
+
 # Codex writes its in-memory tokens back on exit, clobbering whatever we
 # installed, so nothing may move until it is confirmed stopped.
 quit_codex() {
   if ! codex_running; then
     return 0
   fi
+
+  codex_was_running=1
 
   if running_inside_codex; then
     warn 'this command was started from a terminal inside Codex'
@@ -430,6 +445,7 @@ quit_codex() {
 
 reopen_codex() {
   [ "$reopen" -eq 1 ] || return 0
+  [ "$codex_was_running" -eq 1 ] || return 0
   [ "$PLATFORM" = 'macos' ] || return 0
 
   if open_app; then
