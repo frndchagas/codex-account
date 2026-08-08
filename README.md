@@ -5,6 +5,8 @@ Switch between multiple Codex accounts without signing out.
 [![CI](https://github.com/frndchagas/codex-account/actions/workflows/ci.yml/badge.svg)](https://github.com/frndchagas/codex-account/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
+![Saving a profile, listing both accounts, and switching between them in seconds](docs/demo.gif)
+
 ## The problem
 
 Codex keeps its credentials in a single file, `~/.codex/auth.json`. Signing out
