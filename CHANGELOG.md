@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `limits` shows how much of each account's weekly and 5-hour rate limit is
+  left, and `list` gains a weekly column once data exists. Everything is
+  read from Codex's own session files and from snapshots taken while
+  switching; nothing contacts OpenAI. Session files carry no account
+  identity, so attribution leans on the switch itself: sessions modified
+  after `auth.json` was installed belong to the account installed then, and
+  the account you switch away from keeps its last numbers as a snapshot. A
+  snapshot whose reset time has passed reads as 100% again, since a parked
+  account's limit changes on reset and on nothing else.
+
 ### Changed
 
 - Every process running the codex binary — the TUI, `codex exec`, an IDE

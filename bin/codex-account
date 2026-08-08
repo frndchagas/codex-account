@@ -81,6 +81,14 @@ profile_path() {
   printf '%s/%s.json' "$profiles_dir" "$1"
 }
 
+# Not in profiles_dir: the profiles/*.json globs would read work.usage.json
+# as a phantom profile named 'work.usage'.
+usage_dir="$account_home/usage"
+
+usage_path() {
+  printf '%s/%s.json' "$usage_dir" "$1"
+}
+
 # -L on purpose: the profiles directory may be a symlink, and the mode that
 # matters is the one on the directory it resolves to.
 file_mode() {
@@ -551,6 +559,9 @@ sync_back_active_credential() {
   reject_symlink "$auth_file"
 
   if origin="$(active_profile_name)"; then
+    # Before auth.json moves: its mtime still attributes sessions to origin.
+    write_usage_snapshot "$origin"
+
     if [ "$dry_run" -eq 1 ]; then
       info "Would update profile '$(printable "$origin")' with the current tokens."
     else
@@ -562,6 +573,272 @@ sync_back_active_credential() {
   fi
 
   archive_orphan_credential 'not saved as a profile'
+}
+
+# ---------------------------------------------------------------------------
+# Rate-limit usage
+#
+# Read from Codex's own session files, never from the network. Session files
+# carry no account identity; the tie-breaker is the switch itself — a session
+# modified after auth.json was installed belongs to the account installed
+# then. Inactive accounts keep the snapshot taken on switch-away, and a past
+# resets_at upgrades that snapshot to an exact 100%.
+# ---------------------------------------------------------------------------
+
+# Last event per limit_id is its current state; across ids the worst window
+# wins. Output: 'weekly<TAB>used_percent<TAB>resets_at', same for 'fivehour'.
+parse_rate_limit_events() {
+  awk '
+    function sfield(line, key,    m) {
+      if (match(line, "\"" key "\":\"[^\"]*\"")) {
+        m = substr(line, RSTART, RLENGTH)
+        sub("^\"" key "\":\"", "", m)
+        sub("\"$", "", m)
+        return m
+      }
+      return ""
+    }
+    function nfield(blob, key,    m) {
+      if (match(blob, "\"" key "\":-?[0-9.]+")) {
+        m = substr(blob, RSTART, RLENGTH)
+        sub("^\"" key "\":", "", m)
+        return m
+      }
+      return ""
+    }
+    function window_block(line, key,    m) {
+      if (match(line, "\"" key "\":\\{[^}]*\\}"))
+        return substr(line, RSTART, RLENGTH)
+      return ""
+    }
+    {
+      if (index($0, "\"rate_limits\"") == 0) next
+      ts = sfield($0, "timestamp")
+      lid = sfield($0, "limit_id")
+      if (lid == "") lid = "unknown"
+      # ISO-8601 UTC sorts as a string.
+      if ((lid in newest) && ts <= newest[lid]) next
+      newest[lid] = ts
+      pri[lid] = window_block($0, "primary")
+      sec[lid] = window_block($0, "secondary")
+    }
+    END {
+      for (lid in newest) {
+        for (i = 1; i <= 2; i++) {
+          blob = (i == 1) ? pri[lid] : sec[lid]
+          if (blob == "") continue
+          used = nfield(blob, "used_percent")
+          win = nfield(blob, "window_minutes")
+          resets = nfield(blob, "resets_at")
+          if (used == "" || win == "") continue
+          if (win + 0 >= 10080 && (wu == "" || used + 0 > wu + 0)) {
+            wu = used
+            wr = resets
+          }
+          # The 5h window reports as 300 minutes.
+          if (win + 0 > 0 && win + 0 <= 360 && (fu == "" || used + 0 > fu + 0)) {
+            fu = used
+            fr = resets
+          }
+        }
+      }
+      if (wu != "") printf "weekly\t%s\t%s\n", wu, wr
+      if (fu != "") printf "fivehour\t%s\t%s\n", fu, fr
+    }
+  '
+}
+
+# A token refresh also touches auth.json; that shrinks the -newer window,
+# which loses freshness but never attribution.
+scan_active_usage() {
+  local sessions_dir="$codex_home/sessions" result
+
+  [ -f "$auth_file" ] || return 1
+  [ -d "$sessions_dir" ] || return 1
+
+  result="$(find "$sessions_dir" -type f -name '*.jsonl' -newer "$auth_file" -print0 2>/dev/null |
+    xargs -0 grep -h '"rate_limits"' 2>/dev/null |
+    parse_rate_limit_events)"
+
+  [ -n "$result" ] || return 1
+  printf '%s\n' "$result"
+}
+
+usage_field() {
+  local data="$1" window="$2" column="$3"
+
+  printf '%s\n' "$data" | awk -F '\t' -v w="$window" -v c="$column" '$1 == w { print $c }'
+}
+
+write_usage_snapshot() {
+  local name="$1" data wu wr fu fr now temp
+
+  [ "$dry_run" -eq 1 ] && return 0
+
+  data="$(scan_active_usage)" || return 0
+
+  wu="$(usage_field "$data" weekly 2)"
+  wr="$(usage_field "$data" weekly 3)"
+  fu="$(usage_field "$data" fivehour 2)"
+  fr="$(usage_field "$data" fivehour 3)"
+  now="$(date '+%s')"
+
+  mkdir -p "$usage_dir"
+  chmod 700 "$usage_dir" 2>/dev/null || true
+
+  temp="$(mktemp "$(usage_path "$name").XXXXXX")"
+  {
+    printf '{"captured_at":%s' "$now"
+    [ -n "$wu" ] && printf ',"weekly":{"used_percent":%s,"resets_at":%s}' "$wu" "${wr:-0}"
+    [ -n "$fu" ] && printf ',"five_hour":{"used_percent":%s,"resets_at":%s}' "$fu" "${fr:-0}"
+    printf '}\n'
+  } >"$temp"
+  chmod 600 "$temp"
+  mv -f "$temp" "$(usage_path "$name")"
+}
+
+snapshot_field() {
+  local file="$1" block="$2" key="$3" scope
+
+  scope="$(sed -n 's/.*"'"$block"'":{\([^}]*\)}.*/\1/p' "$file" 2>/dev/null)"
+  [ -n "$scope" ] || return 1
+  printf '%s' "$scope" | sed -n 's/.*"'"$key"'":\(-\{0,1\}[0-9.]*\).*/\1/p'
+}
+
+snapshot_captured_at() {
+  sed -n 's/.*"captured_at":\([0-9]*\).*/\1/p' "$1" 2>/dev/null
+}
+
+# Prints 'used_percent<TAB>resets_at<TAB>captured_at'; captured_at is empty
+# when the numbers are live rather than from a snapshot.
+profile_usage() {
+  local name="$1" window="$2" active="$3" data used resets file block
+
+  if [ "$name" = "$active" ]; then
+    if data="$(cached_active_usage)"; then
+      used="$(usage_field "$data" "$window" 2)"
+      resets="$(usage_field "$data" "$window" 3)"
+      if [ -n "$used" ]; then
+        printf '%s\t%s\t\n' "$used" "$resets"
+        return 0
+      fi
+    fi
+  fi
+
+  file="$(usage_path "$name")"
+  [ -f "$file" ] || return 1
+
+  block='weekly'
+  [ "$window" = 'fivehour' ] && block='five_hour'
+
+  used="$(snapshot_field "$file" "$block" 'used_percent')" || return 1
+  [ -n "$used" ] || return 1
+  resets="$(snapshot_field "$file" "$block" 'resets_at')"
+
+  printf '%s\t%s\t%s\n' "$used" "$resets" "$(snapshot_captured_at "$file")"
+}
+
+# list would otherwise pay the session scan once per profile.
+active_usage_cache=''
+active_usage_cached=0
+
+cached_active_usage() {
+  if [ "$active_usage_cached" -eq 0 ]; then
+    active_usage_cache="$(scan_active_usage 2>/dev/null || true)"
+    active_usage_cached=1
+  fi
+  [ -n "$active_usage_cache" ] || return 1
+  printf '%s\n' "$active_usage_cache"
+}
+
+usage_reset_passed() {
+  local resets="$1" now="$2"
+
+  [ -n "$resets" ] && [ "$resets" -gt 0 ] 2>/dev/null || return 1
+  [ "$resets" -le "$now" ]
+}
+
+# Truncated, not rounded: never show more than is actually left.
+percent_left() {
+  awk -v u="$1" 'BEGIN {
+    l = 100 - u
+    if (l < 0) l = 0
+    if (l > 100) l = 100
+    printf "%d", l
+  }'
+}
+
+usage_label() {
+  local name="$1" active="$2" line used resets now
+
+  if ! line="$(profile_usage "$name" weekly "$active")"; then
+    printf '%s' '-'
+    return 0
+  fi
+
+  used="$(printf '%s' "$line" | cut -f1)"
+  resets="$(printf '%s' "$line" | cut -f2)"
+  now="$(date '+%s')"
+
+  if usage_reset_passed "$resets" "$now"; then
+    printf '100%% wk'
+    return 0
+  fi
+
+  printf '%s%% wk' "$(percent_left "$used")"
+}
+
+any_usage_available() {
+  local profile name active
+
+  cached_active_usage >/dev/null 2>&1 && return 0
+
+  for profile in "$usage_dir"/*.json; do
+    [ -e "$profile" ] || continue
+    name="$(basename "$profile" .json)"
+    # A stray usage file without its profile should not resurrect the column.
+    [ -f "$(profile_path "$name")" ] && return 0
+  done
+
+  return 1
+}
+
+fmt_reset_time() {
+  date -r "$1" '+%a %H:%M' 2>/dev/null || date -d "@$1" '+%a %H:%M' 2>/dev/null
+}
+
+age_label() {
+  local then="$1" now="$2" delta
+
+  delta=$((now - then))
+  if [ "$delta" -lt 120 ]; then
+    printf 'just now'
+  elif [ "$delta" -lt 7200 ]; then
+    printf '%dm ago' "$((delta / 60))"
+  elif [ "$delta" -lt 172800 ]; then
+    printf '%dh ago' "$((delta / 3600))"
+  else
+    printf '%dd ago' "$((delta / 86400))"
+  fi
+}
+
+print_limit_line() {
+  local title="$1" line="$2" now="$3" used resets suffix
+
+  used="$(printf '%s' "$line" | cut -f1)"
+  resets="$(printf '%s' "$line" | cut -f2)"
+
+  if usage_reset_passed "$resets" "$now"; then
+    printf '  %-7s 100%% left (reset happened since last use)\n' "$title"
+    return 0
+  fi
+
+  suffix=''
+  if [ -n "$resets" ] && [ "$resets" -gt 0 ] 2>/dev/null; then
+    suffix=" · resets $(fmt_reset_time "$resets")"
+  fi
+
+  printf '  %-7s %s%% left%s\n' "$title" "$(percent_left "$used")" "$suffix"
 }
 
 # ---------------------------------------------------------------------------
@@ -588,9 +865,12 @@ report_archive() {
 cmd_list() {
   ensure_profiles_dir
 
-  local active found=0 profile name marker
+  local active found=0 profile name marker show_usage=0
 
   active="$(active_profile_name 2>/dev/null || true)"
+
+  # No data at all keeps the exact output list always had.
+  any_usage_available && show_usage=1
 
   for profile in "$profiles_dir"/*.json; do
     [ -e "$profile" ] || continue
@@ -603,7 +883,11 @@ cmd_list() {
       marker=' '
     fi
 
-    printf '%s %-20s %s\n' "$marker" "$(printable "$name")" "$(credential_label "$profile")"
+    if [ "$show_usage" -eq 1 ]; then
+      printf '%s %-20s %-28s %s\n' "$marker" "$(printable "$name")" "$(credential_label "$profile")" "$(usage_label "$name" "$active")"
+    else
+      printf '%s %-20s %s\n' "$marker" "$(printable "$name")" "$(credential_label "$profile")"
+    fi
   done
 
   if [ "$found" -eq 0 ]; then
@@ -642,6 +926,58 @@ cmd_current() {
   fi
 }
 
+# Local files only: session data for the active profile, switch-time
+# snapshots for the rest.
+cmd_limits() {
+  ensure_profiles_dir
+
+  local active profile name found=0 first=1 now weekly fivehour captured header
+
+  active="$(active_profile_name 2>/dev/null || true)"
+  now="$(date '+%s')"
+
+  for profile in "$profiles_dir"/*.json; do
+    [ -e "$profile" ] || continue
+    found=1
+    name="$(basename "$profile" .json)"
+
+    [ "$first" -eq 1 ] || printf '\n'
+    first=0
+
+    weekly="$(profile_usage "$name" weekly "$active" 2>/dev/null || true)"
+    fivehour="$(profile_usage "$name" fivehour "$active" 2>/dev/null || true)"
+
+    if [ -n "$active" ] && [ "$name" = "$active" ]; then
+      header='active'
+      # A capture time means even the active profile fell back to a snapshot.
+      captured="$(printf '%s' "$weekly" | cut -f3)"
+      [ -n "$captured" ] && header="last used $(age_label "$captured" "$now")"
+    elif [ -n "$weekly" ] || [ -n "$fivehour" ]; then
+      captured="$(printf '%s' "$weekly" | cut -f3)"
+      header='last use'
+      [ -n "$captured" ] && header="last used $(age_label "$captured" "$now")"
+    else
+      header='no data yet'
+    fi
+
+    printf '%s (%s) — %s\n' "$(printable "$name")" "$(credential_label "$profile")" "$header"
+
+    if [ -z "$weekly" ] && [ -z "$fivehour" ]; then
+      printf '  use Codex on this account, or switch away from it once, to record limits\n'
+      continue
+    fi
+
+    [ -n "$weekly" ] && print_limit_line 'weekly' "$weekly" "$now"
+    [ -n "$fivehour" ] && print_limit_line '5h' "$fivehour" "$now"
+  done
+
+  if [ "$found" -eq 0 ]; then
+    info 'No profiles saved yet.'
+    info "Sign in to Codex, then run: $PROGRAM_NAME save <name>"
+    return 0
+  fi
+}
+
 cmd_save() {
   local name="$1" target
 
@@ -666,6 +1002,7 @@ cmd_save() {
 
   install_credential "$auth_file" "$target"
   info "Saved '$name' ($(credential_label "$target"))."
+  write_usage_snapshot "$name"
 }
 
 cmd_use() {
@@ -757,7 +1094,7 @@ cmd_remove() {
     return 0
   fi
 
-  rm -f "$target"
+  rm -f "$target" "$(usage_path "$name")"
   info "Removed profile '$name'."
   info "That account is still signed in on the server; run '$PROGRAM_NAME save' again to re-add it."
 }
@@ -807,6 +1144,7 @@ $PROGRAM_NAME $PROGRAM_VERSION — switch between multiple local Codex sign-ins.
 Usage:
   $PROGRAM_NAME list                  List saved profiles ('*' marks the active one)
   $PROGRAM_NAME current               Show which account is signed in right now
+  $PROGRAM_NAME limits                Show how much of each account's rate limit is left
   $PROGRAM_NAME save <name>           Save the active sign-in as a profile
   $PROGRAM_NAME import <file> <name>  Save a credential file as a profile
   $PROGRAM_NAME use <name>            Switch to a saved profile
@@ -893,6 +1231,7 @@ main() {
   case "$command" in
     list | ls) cmd_list ;;
     current | whoami) cmd_current ;;
+    limits | usage) cmd_limits ;;
     save)
       [ "${#args[@]}" -eq 1 ] || die "usage: $PROGRAM_NAME save <name>"
       cmd_save "${args[0]}"

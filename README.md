@@ -78,6 +78,7 @@ you run it — it handles your credentials.
 | --- | --- |
 | `codex-account list` | List saved profiles; `*` marks the active one |
 | `codex-account current` | Show which account is signed in right now |
+| `codex-account limits` | Show how much of each account's rate limit is left |
 | `codex-account save <name>` | Save the active sign-in under a name |
 | `codex-account import <file> <name>` | Save an existing credential file as a profile |
 | `codex-account use <name>` | Switch to a saved profile |
@@ -146,6 +147,36 @@ An *orphan* is an active sign-in that matches no saved profile — you signed in
 through the app without running `save`. Discarding it would throw away a real
 session, so it's moved to an archive directory instead. Pass `--discard-orphan`
 to delete it outright.
+
+## Rate limits
+
+`codex-account limits` shows how much of each account's weekly and 5-hour
+rate limit is left. Once any data exists, `list` shows the weekly number as
+an extra column:
+
+```console
+$ codex-account list
+* work                 you@company.com              38% wk
+  personal             you@gmail.com                100% wk
+
+$ codex-account limits
+work (you@company.com) — active
+  weekly  38% left · resets Tue 14:30
+  5h      82% left · resets 16:05
+
+personal (you@gmail.com) — last used 2d ago
+  weekly  100% left (reset happened since last use)
+```
+
+The numbers come from Codex's own session files, never from the network.
+The active account reads live; every other account keeps a snapshot taken
+the moment you switched away. That snapshot stays truthful because a parked
+account's limit only changes when its window resets — and the reset time is
+part of the snapshot, so an expired window shows as 100% again instead of a
+stale number.
+
+Data appears once an account has produced a session or been switched away
+from. Until then, `limits` says so instead of guessing.
 
 ## Security
 
