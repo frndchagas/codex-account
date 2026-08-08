@@ -12,7 +12,7 @@ set -euo pipefail
 umask 077
 
 readonly PROGRAM_NAME='codex-account'
-readonly PROGRAM_VERSION='0.2.0'
+readonly PROGRAM_VERSION='0.3.0'
 readonly QUIT_TIMEOUT_SECONDS="${CODEX_ACCOUNT_QUIT_TIMEOUT:-20}"
 readonly PROFILE_NAME_MAX=64
 
