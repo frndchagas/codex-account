@@ -12,8 +12,10 @@ set -euo pipefail
 umask 077
 
 readonly PROGRAM_NAME='codex-account'
-readonly PROGRAM_VERSION='0.3.0'
+readonly PROGRAM_VERSION='0.3.1'
 readonly QUIT_TIMEOUT_SECONDS="${CODEX_ACCOUNT_QUIT_TIMEOUT:-20}"
+readonly USAGE_SCAN_MAX_FILES="${CODEX_ACCOUNT_USAGE_SCAN_MAX_FILES:-32}"
+readonly USAGE_SCAN_TAIL_BYTES="${CODEX_ACCOUNT_USAGE_SCAN_TAIL_BYTES:-1048576}"
 readonly PROFILE_NAME_MAX=64
 
 # Anchored on the executable name alone, on purpose. Every process running
@@ -52,6 +54,16 @@ printable() {
 case "$QUIT_TIMEOUT_SECONDS" in
   '' | *[!0-9]*) die 'CODEX_ACCOUNT_QUIT_TIMEOUT must be a whole number of seconds' ;;
 esac
+
+case "$USAGE_SCAN_MAX_FILES" in
+  '' | *[!0-9]*) die 'CODEX_ACCOUNT_USAGE_SCAN_MAX_FILES must be a positive whole number' ;;
+esac
+[ "$USAGE_SCAN_MAX_FILES" -gt 0 ] || die 'CODEX_ACCOUNT_USAGE_SCAN_MAX_FILES must be greater than zero'
+
+case "$USAGE_SCAN_TAIL_BYTES" in
+  '' | *[!0-9]*) die 'CODEX_ACCOUNT_USAGE_SCAN_TAIL_BYTES must be a positive whole number' ;;
+esac
+[ "$USAGE_SCAN_TAIL_BYTES" -gt 0 ] || die 'CODEX_ACCOUNT_USAGE_SCAN_TAIL_BYTES must be greater than zero'
 
 platform() {
   if [ "${CODEX_ACCOUNT_TEST_MODE:-0}" = '1' ] && [ -n "${CODEX_ACCOUNT_FAKE_PLATFORM:-}" ]; then
@@ -650,15 +662,46 @@ parse_rate_limit_events() {
 
 # A token refresh also touches auth.json; that shrinks the -newer window,
 # which loses freshness but never attribution.
+session_file_size() {
+  stat -c '%s' "$1" 2>/dev/null || stat -f '%z' "$1" 2>/dev/null
+}
+
+# Session paths are generated from an ISO timestamp, so reverse lexical order
+# is newest first. Consume the full find output in awk instead of head: under
+# pipefail, head can turn an otherwise successful scan into SIGPIPE.
+recent_session_files() {
+  local sessions_dir="$1"
+
+  find "$sessions_dir" -type f -name '*.jsonl' -newer "$auth_file" -print 2>/dev/null |
+    LC_ALL=C sort -r |
+    awk -v max="$USAGE_SCAN_MAX_FILES" 'NR <= max'
+}
+
+# Reading an entire rollout can mean hundreds of megabytes. Keep only complete
+# JSONL records from a bounded tail. Small files are read whole; for a larger
+# file, the first line in the tail may be a truncated record and is discarded.
+bounded_session_events() {
+  local sessions_dir="$1" file size
+
+  recent_session_files "$sessions_dir" |
+    while IFS= read -r file; do
+      size="$(session_file_size "$file" || true)"
+
+      if [ -n "$size" ] && [ "$size" -le "$USAGE_SCAN_TAIL_BYTES" ] 2>/dev/null; then
+        cat "$file"
+      else
+        tail -c "$USAGE_SCAN_TAIL_BYTES" "$file" 2>/dev/null | sed '1d'
+      fi
+    done
+}
+
 scan_active_usage() {
   local sessions_dir="$codex_home/sessions" result
 
   [ -f "$auth_file" ] || return 1
   [ -d "$sessions_dir" ] || return 1
 
-  result="$(find "$sessions_dir" -type f -name '*.jsonl' -newer "$auth_file" -print0 2>/dev/null |
-    xargs -0 grep -h '"rate_limits"' 2>/dev/null |
-    parse_rate_limit_events)"
+  result="$(bounded_session_events "$sessions_dir" | parse_rate_limit_events)"
 
   [ -n "$result" ] || return 1
   printf '%s\n' "$result"
@@ -1165,6 +1208,10 @@ Environment:
   CODEX_HOME             Codex data directory (default: ~/.codex)
   CODEX_ACCOUNT_HOME     Where profiles are stored
                          (default: \${XDG_DATA_HOME:-~/.local/share}/$PROGRAM_NAME)
+  CODEX_ACCOUNT_USAGE_SCAN_MAX_FILES
+                         Most recent session files inspected for limits (default: 32)
+  CODEX_ACCOUNT_USAGE_SCAN_TAIL_BYTES
+                         Maximum bytes read from each session file (default: 1048576)
 
 This tool never calls 'codex logout' and never contacts OpenAI. It only moves
 the local credential file, so every saved account keeps a valid session.

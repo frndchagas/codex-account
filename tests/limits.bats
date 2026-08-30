@@ -26,6 +26,14 @@ write_session() {
   } >>"$(sessions_dir)/$file"
 }
 
+write_filler() {
+  local file="$1" bytes="$2"
+
+  dd if=/dev/zero bs="$bytes" count=1 2>/dev/null |
+    tr '\0' x >>"$(sessions_dir)/$file"
+  printf '\n' >>"$(sessions_dir)/$file"
+}
+
 backdate_auth() {
   touch -t 202601010000 "$CODEX_HOME/auth.json"
 }
@@ -79,6 +87,47 @@ past_epoch() {
 
   run "$CODEX_ACCOUNT" list
   [[ "$output" == *'80% wk'* ]] || return 1
+}
+
+@test "usage scan reads only a bounded tail of each session" {
+  sign_in_as 'work@example.com' 'acct-work'
+  "$CODEX_ACCOUNT" save work
+  backdate_auth
+  write_session rollout-a.jsonl '2026-08-08T10:00:00.000Z' premium 90.0 "$(future_epoch)"
+  write_filler rollout-a.jsonl 2048
+
+  CODEX_ACCOUNT_USAGE_SCAN_TAIL_BYTES=1024 run "$CODEX_ACCOUNT" list
+  [[ "$output" != *'% wk'* ]] || return 1
+
+  write_session rollout-a.jsonl '2026-08-08T11:00:00.000Z' premium 20.0 "$(future_epoch)"
+  CODEX_ACCOUNT_USAGE_SCAN_TAIL_BYTES=1024 run "$CODEX_ACCOUNT" list
+  [[ "$output" == *'80% wk'* ]] || return 1
+}
+
+@test "usage scan inspects only the configured number of newest sessions" {
+  sign_in_as 'work@example.com' 'acct-work'
+  "$CODEX_ACCOUNT" save work
+  backdate_auth
+  write_session rollout-a.jsonl '2026-08-08T10:00:00.000Z' premium 90.0 "$(future_epoch)"
+  write_filler rollout-b.jsonl 128
+  write_filler rollout-c.jsonl 128
+
+  CODEX_ACCOUNT_USAGE_SCAN_MAX_FILES=2 run "$CODEX_ACCOUNT" list
+  [[ "$output" != *'% wk'* ]] || return 1
+
+  write_session rollout-c.jsonl '2026-08-08T11:00:00.000Z' premium 20.0 "$(future_epoch)"
+  CODEX_ACCOUNT_USAGE_SCAN_MAX_FILES=2 run "$CODEX_ACCOUNT" list
+  [[ "$output" == *'80% wk'* ]] || return 1
+}
+
+@test "usage scan bounds must be positive whole numbers" {
+  CODEX_ACCOUNT_USAGE_SCAN_MAX_FILES=0 run "$CODEX_ACCOUNT" list
+  [ "$status" -eq 1 ]
+  [[ "$output" == *'must be greater than zero'* ]] || return 1
+
+  CODEX_ACCOUNT_USAGE_SCAN_TAIL_BYTES=invalid run "$CODEX_ACCOUNT" list
+  [ "$status" -eq 1 ]
+  [[ "$output" == *'must be a positive whole number'* ]] || return 1
 }
 
 @test "sessions older than the credential are not attributed to it" {

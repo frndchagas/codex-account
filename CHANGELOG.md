@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-08-29
+
+### Fixed
+
+- Rate-limit detection no longer scans every byte of every session created by
+  the active account. It inspects only the 32 newest session files and at most
+  the final 1 MiB of each, so switching remains bounded even after Codex has
+  accumulated hundreds of gigabytes of transcripts. Both limits can be tuned
+  through environment variables.
+
 ## [0.3.0] - 2026-08-08
 
 ### Added
@@ -102,7 +112,8 @@ Initial release.
 - `--dry-run` for every mutating command.
 - macOS and Linux support; bash 3.2 compatible.
 
-[Unreleased]: https://github.com/frndchagas/codex-account/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/frndchagas/codex-account/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/frndchagas/codex-account/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/frndchagas/codex-account/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/frndchagas/codex-account/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/frndchagas/codex-account/releases/tag/v0.1.0

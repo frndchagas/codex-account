@@ -170,10 +170,14 @@ personal (you@gmail.com) — last used 2d ago
 
 The numbers come from Codex's own session files, never from the network.
 The active account reads live; every other account keeps a snapshot taken
-the moment you switched away. That snapshot stays truthful because a parked
-account's limit only changes when its window resets — and the reset time is
-part of the snapshot, so an expired window shows as 100% again instead of a
-stale number.
+the moment you switched away. To keep account switching fast even when Codex
+has accumulated a very large history, the live scan is bounded to the newest
+32 session files and the last 1 MiB of each file. That is where Codex writes
+the current rate-limit events; older transcript content is never read.
+
+The snapshot stays truthful because a parked account's limit only changes
+when its window resets — and the reset time is part of the snapshot, so an
+expired window shows as 100% again instead of a stale number.
 
 Data appears once an account has produced a session or been switched away
 from. Until then, `limits` says so instead of guessing.
@@ -204,6 +208,8 @@ See [SECURITY.md](SECURITY.md) to report a vulnerability.
 | `CODEX_HOME` | `~/.codex` | Codex's data directory (Codex's own variable) |
 | `CODEX_ACCOUNT_HOME` | `${XDG_DATA_HOME:-~/.local/share}/codex-account` | Where profiles are stored |
 | `CODEX_ACCOUNT_QUIT_TIMEOUT` | `20` | Seconds to wait for the app to exit |
+| `CODEX_ACCOUNT_USAGE_SCAN_MAX_FILES` | `32` | Most recent session files inspected for rate limits |
+| `CODEX_ACCOUNT_USAGE_SCAN_TAIL_BYTES` | `1048576` | Maximum bytes read from each inspected session file |
 
 ## Contributing
 
