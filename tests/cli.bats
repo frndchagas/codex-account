@@ -74,3 +74,19 @@ setup() {
   [ "$status" -eq 0 ]
   [[ "$output" == *'work@example.com'* ]] || return 1
 }
+
+@test "--sort refuses an unknown key" {
+  run "$CODEX_ACCOUNT" list --sort nope
+  [ "$status" -eq 2 ]
+  [[ "$output" == *'unknown sort key'* ]] || return 1
+
+  run "$CODEX_ACCOUNT" --sort=nope limits
+  [ "$status" -eq 2 ]
+  [[ "$output" == *'unknown sort key'* ]] || return 1
+}
+
+@test "--sort without a key is a usage error" {
+  run "$CODEX_ACCOUNT" list --sort
+  [ "$status" -eq 2 ]
+  [[ "$output" == *'--sort needs a key'* ]] || return 1
+}

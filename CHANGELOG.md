@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-15
+
+### Added
+
+- `list` shows the day and time each account's weekly window resets, next to
+  the percentage left. `limits` now includes the date in the weekly reset as
+  well: that window can end up to seven days out, where a weekday alone could
+  mean this week or the next.
+- `--sort reset` orders `list` and `limits` by the next weekly reset, so the
+  account that frees up soonest is on top. Accounts that already reset come
+  first and accounts without data come last. `--sort name` stays the default.
+
+### Changed
+
+- Reset times are printed in English whatever the locale, like every other
+  message.
+
 ## [0.3.2] - 2026-09-07
 
 ### Fixed
@@ -122,7 +139,9 @@ Initial release.
 - `--dry-run` for every mutating command.
 - macOS and Linux support; bash 3.2 compatible.
 
-[Unreleased]: https://github.com/frndchagas/codex-account/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/frndchagas/codex-account/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/frndchagas/codex-account/compare/v0.3.2...v0.4.0
+[0.3.2]: https://github.com/frndchagas/codex-account/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/frndchagas/codex-account/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/frndchagas/codex-account/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/frndchagas/codex-account/compare/v0.1.0...v0.2.0

@@ -12,7 +12,7 @@ set -euo pipefail
 umask 077
 
 readonly PROGRAM_NAME='codex-account'
-readonly PROGRAM_VERSION='0.3.2'
+readonly PROGRAM_VERSION='0.4.0'
 readonly QUIT_TIMEOUT_SECONDS="${CODEX_ACCOUNT_QUIT_TIMEOUT:-20}"
 readonly USAGE_SCAN_MAX_FILES="${CODEX_ACCOUNT_USAGE_SCAN_MAX_FILES:-32}"
 readonly USAGE_SCAN_TAIL_BYTES="${CODEX_ACCOUNT_USAGE_SCAN_TAIL_BYTES:-1048576}"
@@ -811,17 +811,18 @@ percent_left() {
   }'
 }
 
+# The next few helpers take the weekly line from profile_usage, empty when the
+# profile has no data, so each profile's usage is read once per command.
 usage_label() {
-  local name="$1" active="$2" line used resets now
+  local line="$1" now="$2" used resets
 
-  if ! line="$(profile_usage "$name" weekly "$active")"; then
+  if [ -z "$line" ]; then
     printf '%s' '-'
     return 0
   fi
 
   used="$(printf '%s' "$line" | cut -f1)"
   resets="$(printf '%s' "$line" | cut -f2)"
-  now="$(date '+%s')"
 
   if usage_reset_passed "$resets" "$now"; then
     printf '100%% wk'
@@ -829,6 +830,48 @@ usage_label() {
   fi
 
   printf '%s%% wk' "$(percent_left "$used")"
+}
+
+reset_label() {
+  local line="$1" now="$2" resets
+
+  [ -n "$line" ] || return 0
+  resets="$(printf '%s' "$line" | cut -f2)"
+
+  if usage_reset_passed "$resets" "$now"; then
+    printf 'reset since last use'
+  elif [ -n "$resets" ] && [ "$resets" -gt 0 ] 2>/dev/null; then
+    printf 'resets %s' "$(fmt_reset_date "$resets")"
+  fi
+}
+
+# One 'rank<TAB>resets_at<TAB>row' record per profile, for sorted_rows. By
+# name every record ties, because glob order already is name order. By reset,
+# a window that already reset is usable now and goes before any pending reset,
+# and a profile with nothing recorded has no date to go by and goes last.
+sort_record() {
+  local line="$1" now="$2" row="$3" resets
+
+  if [ "$sort_key" != 'reset' ]; then
+    printf '0\t0\t%s\n' "$row"
+    return 0
+  fi
+
+  resets="$(printf '%s' "$line" | cut -f2)"
+
+  if usage_reset_passed "$resets" "$now"; then
+    printf '0\t0\t%s\n' "$row"
+  elif [ -n "$resets" ] && [ "$resets" -gt 0 ] 2>/dev/null; then
+    printf '1\t%s\t%s\n' "$resets" "$row"
+  else
+    printf '2\t0\t%s\n' "$row"
+  fi
+}
+
+# Row indices rather than names go through sort, so a name read off disk can
+# never split a record.
+sorted_rows() {
+  LC_ALL=C sort -t "$(printf '\t')" -k1,1n -k2,2n -k3,3n | cut -f3
 }
 
 any_usage_available() {
@@ -846,8 +889,19 @@ any_usage_available() {
   return 1
 }
 
+# The C locale keeps dates in the language of every other message.
+fmt_epoch() {
+  LC_ALL=C date -r "$1" "$2" 2>/dev/null || LC_ALL=C date -d "@$1" "$2" 2>/dev/null
+}
+
 fmt_reset_time() {
-  date -r "$1" '+%a %H:%M' 2>/dev/null || date -d "@$1" '+%a %H:%M' 2>/dev/null
+  fmt_epoch "$1" '+%a %H:%M'
+}
+
+# A weekly window can end up to seven days out, where a weekday alone could
+# mean this week or the next, so it carries the date as well.
+fmt_reset_date() {
+  fmt_epoch "$1" '+%a %d %b %H:%M'
 }
 
 age_label() {
@@ -878,7 +932,11 @@ print_limit_line() {
 
   suffix=''
   if [ -n "$resets" ] && [ "$resets" -gt 0 ] 2>/dev/null; then
-    suffix=" · resets $(fmt_reset_time "$resets")"
+    if [ "$title" = 'weekly' ]; then
+      suffix=" · resets $(fmt_reset_date "$resets")"
+    else
+      suffix=" · resets $(fmt_reset_time "$resets")"
+    fi
   fi
 
   printf '  %-7s %s%% left%s\n' "$title" "$(percent_left "$used")" "$suffix"
@@ -908,11 +966,12 @@ report_archive() {
 cmd_list() {
   ensure_profiles_dir
 
-  local active found=0 profile name show_usage=0
-  local -a markers names labels usages
+  local active profile name show_usage=0 now order
+  local -a markers names labels weeklies usages resets
   local i rows=0 name_width=0 label_width=0 usage_width=0
 
   active="$(active_profile_name 2>/dev/null || true)"
+  now="$(date '+%s')"
 
   # No data at all keeps the exact output list always had.
   any_usage_available && show_usage=1
@@ -922,7 +981,6 @@ cmd_list() {
   # push the usage column out of line on that row alone.
   for profile in "$profiles_dir"/*.json; do
     [ -e "$profile" ] || continue
-    found=1
     name="$(basename "$profile" .json)"
 
     if [ -n "$active" ] && [ "$name" = "$active" ]; then
@@ -933,9 +991,23 @@ cmd_list() {
 
     names[rows]="$(printable "$name")"
     labels[rows]="$(credential_label "$profile")"
-    [ "$show_usage" -eq 1 ] && usages[rows]="$(usage_label "$name" "$active")"
+    weeklies[rows]=''
+
+    if [ "$show_usage" -eq 1 ]; then
+      weeklies[rows]="$(profile_usage "$name" weekly "$active" || true)"
+      usages[rows]="$(usage_label "${weeklies[rows]}" "$now")"
+      resets[rows]="$(reset_label "${weeklies[rows]}" "$now")"
+    fi
+
     rows=$((rows + 1))
   done
+
+  if [ "$rows" -eq 0 ]; then
+    info 'No profiles saved yet.'
+    info "Sign in to Codex, then run: $PROGRAM_NAME save <name>"
+    report_archive
+    return 0
+  fi
 
   # An empty array is an unbound variable under 'set -u' in bash 5, so the row
   # count is kept by hand rather than read back off the arrays.
@@ -945,22 +1017,24 @@ cmd_list() {
     [ "$show_usage" -eq 1 ] && [ "${#usages[i]}" -gt "$usage_width" ] && usage_width="${#usages[i]}"
   done
 
-  # Usage is right-aligned so the percent signs stack.
-  for ((i = 0; i < rows; i++)); do
+  order="$(
+    for ((i = 0; i < rows; i++)); do
+      sort_record "${weeklies[i]}" "$now" "$i"
+    done | sorted_rows
+  )"
+
+  # Usage is right-aligned so the percent signs stack. The reset date comes
+  # last and unpadded, so a row without one carries no trailing blanks.
+  for i in $order; do
     if [ "$show_usage" -eq 1 ]; then
-      printf '%s %-*s %-*s %*s\n' "${markers[i]}" "$name_width" "${names[i]}" \
+      printf '%s %-*s %-*s %*s' "${markers[i]}" "$name_width" "${names[i]}" \
         "$label_width" "${labels[i]}" "$usage_width" "${usages[i]}"
+      [ -z "${resets[i]}" ] || printf ' · %s' "${resets[i]}"
+      printf '\n'
     else
       printf '%s %-*s %s\n' "${markers[i]}" "$name_width" "${names[i]}" "${labels[i]}"
     fi
   done
-
-  if [ "$found" -eq 0 ]; then
-    info 'No profiles saved yet.'
-    info "Sign in to Codex, then run: $PROGRAM_NAME save <name>"
-    report_archive
-    return 0
-  fi
 
   if [ -z "$active" ]; then
     if active_credential_exists; then
@@ -996,21 +1070,39 @@ cmd_current() {
 cmd_limits() {
   ensure_profiles_dir
 
-  local active profile name found=0 first=1 now weekly fivehour captured header
+  local active profile name first=1 now weekly fivehour captured header order
+  local -a names weeklies
+  local i rows=0
 
   active="$(active_profile_name 2>/dev/null || true)"
   now="$(date '+%s')"
 
   for profile in "$profiles_dir"/*.json; do
     [ -e "$profile" ] || continue
-    found=1
-    name="$(basename "$profile" .json)"
+    names[rows]="$(basename "$profile" .json)"
+    weeklies[rows]="$(profile_usage "${names[rows]}" weekly "$active" 2>/dev/null || true)"
+    rows=$((rows + 1))
+  done
+
+  if [ "$rows" -eq 0 ]; then
+    info 'No profiles saved yet.'
+    info "Sign in to Codex, then run: $PROGRAM_NAME save <name>"
+    return 0
+  fi
+
+  order="$(
+    for ((i = 0; i < rows; i++)); do
+      sort_record "${weeklies[i]}" "$now" "$i"
+    done | sorted_rows
+  )"
+
+  for i in $order; do
+    name="${names[i]}"
+    weekly="${weeklies[i]}"
+    fivehour="$(profile_usage "$name" fivehour "$active" 2>/dev/null || true)"
 
     [ "$first" -eq 1 ] || printf '\n'
     first=0
-
-    weekly="$(profile_usage "$name" weekly "$active" 2>/dev/null || true)"
-    fivehour="$(profile_usage "$name" fivehour "$active" 2>/dev/null || true)"
 
     if [ -n "$active" ] && [ "$name" = "$active" ]; then
       header='active'
@@ -1025,22 +1117,20 @@ cmd_limits() {
       header='no data yet'
     fi
 
-    printf '%s (%s) — %s\n' "$(printable "$name")" "$(credential_label "$profile")" "$header"
+    printf '%s (%s) — %s\n' "$(printable "$name")" "$(credential_label "$(profile_path "$name")")" "$header"
 
     if [ -z "$weekly" ] && [ -z "$fivehour" ]; then
       printf '  use Codex on this account, or switch away from it once, to record limits\n'
       continue
     fi
 
-    [ -n "$weekly" ] && print_limit_line 'weekly' "$weekly" "$now"
-    [ -n "$fivehour" ] && print_limit_line '5h' "$fivehour" "$now"
+    if [ -n "$weekly" ]; then
+      print_limit_line 'weekly' "$weekly" "$now"
+    fi
+    if [ -n "$fivehour" ]; then
+      print_limit_line '5h' "$fivehour" "$now"
+    fi
   done
-
-  if [ "$found" -eq 0 ]; then
-    info 'No profiles saved yet.'
-    info "Sign in to Codex, then run: $PROGRAM_NAME save <name>"
-    return 0
-  fi
 }
 
 cmd_save() {
@@ -1223,6 +1313,8 @@ Options:
   -f, --force            Overwrite an existing profile, or remove the active one
       --no-reopen        Do not reopen the Codex app afterwards (macOS)
       --discard-orphan   Delete an unsaved active sign-in instead of archiving it
+      --sort <key>       Order list and limits by name (default) or reset,
+                         the soonest weekly reset first
   -q, --quiet            Only print warnings and errors
   -h, --help             Show this help
 
@@ -1251,6 +1343,17 @@ dry_run=0
 force=0
 reopen=1
 discard_orphan=0
+sort_key='name'
+
+set_sort_key() {
+  case "$1" in
+    name | reset) sort_key="$1" ;;
+    *)
+      warn "unknown sort key: '$(printable "$1")' (use name or reset)"
+      return 1
+      ;;
+  esac
+}
 
 main() {
   local command='' args=()
@@ -1262,6 +1365,15 @@ main() {
       --no-reopen) reopen=0 ;;
       --discard-orphan) discard_orphan=1 ;;
       -q | --quiet) quiet=1 ;;
+      --sort)
+        if [ "$#" -lt 2 ]; then
+          warn 'option --sort needs a key: name or reset'
+          return 2
+        fi
+        set_sort_key "$2" || return 2
+        shift
+        ;;
+      --sort=*) set_sort_key "${1#--sort=}" || return 2 ;;
       -h | --help)
         cmd_help
         return 0

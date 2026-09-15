@@ -85,7 +85,8 @@ you run it — it handles your credentials.
 | `codex-account forget` | Sign out locally, leaving the server session alive |
 | `codex-account remove <name>` | Delete a saved profile |
 
-Options: `--dry-run`, `--force`, `--no-reopen`, `--discard-orphan`, `--quiet`.
+Options: `--dry-run`, `--force`, `--no-reopen`, `--discard-orphan`,
+`--sort <key>`, `--quiet`.
 
 ### Getting started
 
@@ -151,22 +152,27 @@ to delete it outright.
 ## Rate limits
 
 `codex-account limits` shows how much of each account's weekly and 5-hour
-rate limit is left. Once any data exists, `list` shows the weekly number as
-an extra column:
+rate limit is left. Once any data exists, `list` shows the weekly number and
+the day that window resets as an extra column:
 
 ```console
 $ codex-account list
-* work     you@company.com  38% wk
-  personal you@gmail.com   100% wk
+* work     you@company.com  38% wk · resets Tue 22 Sep 14:30
+  personal you@gmail.com   100% wk · reset since last use
 
 $ codex-account limits
 work (you@company.com) — active
-  weekly  38% left · resets Tue 14:30
-  5h      82% left · resets 16:05
+  weekly  38% left · resets Tue 22 Sep 14:30
+  5h      82% left · resets Tue 16:05
 
 personal (you@gmail.com) — last used 2d ago
   weekly  100% left (reset happened since last use)
 ```
+
+To see which account frees up first, pass `--sort reset` to `list` or
+`limits`. Accounts whose weekly window already reset come first, then pending
+resets from the soonest, then accounts with no data yet. The default is
+`--sort name`.
 
 The numbers come from Codex's own session files, never from the network.
 The active account reads live; every other account keeps a snapshot taken

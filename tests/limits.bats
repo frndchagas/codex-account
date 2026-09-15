@@ -46,6 +46,48 @@ past_epoch() {
   echo $(($(date '+%s') - 86400))
 }
 
+in_days() {
+  echo $(($(date '+%s') + $1 * 86400))
+}
+
+fmt_date() {
+  LC_ALL=C date -r "$1" "$2" 2>/dev/null || LC_ALL=C date -d "@$1" "$2"
+}
+
+# A parked profile: the credential plus the snapshot switching away leaves
+# behind. No resets_at means the profile never recorded any usage.
+park_profile() {
+  local name="$1" resets="${2:-}"
+
+  mkdir -p "$CODEX_ACCOUNT_HOME/profiles" "$CODEX_ACCOUNT_HOME/usage"
+  make_credential "$name@example.com" "acct-$name" >"$CODEX_ACCOUNT_HOME/profiles/$name.json"
+  [ -n "$resets" ] || return 0
+  printf '{"captured_at":%s,"weekly":{"used_percent":50.0,"resets_at":%s}}\n' \
+    "$(date '+%s')" "$resets" >"$CODEX_ACCOUNT_HOME/usage/$name.json"
+}
+
+# Name order and reset order disagree on purpose, and the active profile reads
+# live session data rather than a snapshot.
+park_sorting_fixture() {
+  park_profile a-later "$(in_days 3)"
+  park_profile b-soon "$(in_days 1)"
+  park_profile c-reset "$(past_epoch)"
+  park_profile d-empty
+
+  sign_in_as 'e-active@example.com' 'acct-e-active'
+  backdate_auth
+  write_session rollout-a.jsonl '2026-08-08T10:00:00.000Z' premium 50.0 "$(in_days 2)"
+  "$CODEX_ACCOUNT" save e-active
+}
+
+listed_names() {
+  printf '%s\n' "$output" | awk '/^[* ] [^ ]/ { sub(/^[* ] /, ""); print $1 }' | tr '\n' ' '
+}
+
+limits_names() {
+  printf '%s\n' "$output" | awk '/^[^ ]/ { print $1 }' | tr '\n' ' '
+}
+
 @test "list stays column-free when no usage data exists" {
   sign_in_as 'work@example.com' 'acct-work'
   "$CODEX_ACCOUNT" save work
@@ -251,22 +293,100 @@ past_epoch() {
   [[ "$output" == *'100% wk'* ]] || return 1
   [[ "$output" == *'5% wk'* ]] || return 1
 
-  # Padded columns and a right-aligned usage column make every row the same
-  # length. A fixed width would let the long name and address stretch their
-  # own row and leave the percentages ragged.
-  local line rows=0 width=''
+  # Padded columns and a right-aligned usage column put every percent sign in
+  # the same column. A fixed width would let the long name and address stretch
+  # their own row and leave the percentages ragged.
+  local line prefix rows=0 width=''
   while IFS= read -r line; do
     case "$line" in
-      *'% wk') ;;
+      *'% wk'*) ;;
       *) continue ;;
     esac
     rows=$((rows + 1))
+    prefix=${line%%"% wk"*}
     if [ -z "$width" ]; then
-      width="${#line}"
-    elif [ "${#line}" -ne "$width" ]; then
+      width="${#prefix}"
+    elif [ "${#prefix}" -ne "$width" ]; then
       return 1
     fi
   done <<<"$output"
 
   [ "$rows" -eq 2 ]
+}
+
+@test "list shows the day each weekly window resets" {
+  local resets
+  resets="$(in_days 3)"
+  park_profile work "$resets"
+
+  run "$CODEX_ACCOUNT" list
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"50% wk · resets $(fmt_date "$resets" '+%a %d %b %H:%M')"* ]] || return 1
+}
+
+@test "list says when a parked weekly window already reset" {
+  park_profile work "$(past_epoch)"
+
+  run "$CODEX_ACCOUNT" list
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'100% wk · reset since last use'* ]] || return 1
+}
+
+@test "a profile without usage data gets no reset date" {
+  park_profile work "$(in_days 3)"
+  park_profile personal
+
+  run "$CODEX_ACCOUNT" list
+  [ "$status" -eq 0 ]
+
+  local line
+  line="$(printf '%s\n' "$output" | grep 'personal@example.com')"
+  [[ "$line" == *' -' ]] || return 1
+  [[ "$line" != *'reset'* ]] || return 1
+}
+
+@test "limits dates the weekly reset and keeps the 5h one short" {
+  local weekly_resets
+  weekly_resets="$(in_days 3)"
+  sign_in_as 'work@example.com' 'acct-work'
+  backdate_auth
+  write_session rollout-a.jsonl '2026-08-08T10:00:00.000Z' premium 38.0 "$weekly_resets" 15.0
+  "$CODEX_ACCOUNT" save work
+
+  run "$CODEX_ACCOUNT" limits
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"weekly  62% left · resets $(fmt_date "$weekly_resets" '+%a %d %b %H:%M')"* ]] || return 1
+  [[ "$output" == *"5h      85% left · resets $(fmt_date "$weekly_resets" '+%a %H:%M')"* ]] || return 1
+}
+
+@test "list and limits keep name order by default" {
+  park_sorting_fixture
+
+  run "$CODEX_ACCOUNT" list
+  [ "$status" -eq 0 ]
+  [ "$(listed_names)" = 'a-later b-soon c-reset d-empty e-active ' ]
+
+  run "$CODEX_ACCOUNT" list --sort name
+  [ "$status" -eq 0 ]
+  [ "$(listed_names)" = 'a-later b-soon c-reset d-empty e-active ' ]
+
+  run "$CODEX_ACCOUNT" limits
+  [ "$status" -eq 0 ]
+  [ "$(limits_names)" = 'a-later b-soon c-reset d-empty e-active ' ]
+}
+
+@test "--sort reset lists the soonest weekly reset first" {
+  park_sorting_fixture
+
+  run "$CODEX_ACCOUNT" list --sort reset
+  [ "$status" -eq 0 ]
+  [ "$(listed_names)" = 'c-reset b-soon e-active a-later d-empty ' ]
+}
+
+@test "--sort reset orders limits the same way" {
+  park_sorting_fixture
+
+  run "$CODEX_ACCOUNT" --sort=reset limits
+  [ "$status" -eq 0 ]
+  [ "$(limits_names)" = 'c-reset b-soon e-active a-later d-empty ' ]
 }
